@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ from typing import Mapping, Sequence
 import unittest
 
 from with_native_keyring import (
-    Cancellation, Child, NativeSession, ProcessExecutor, SetupError, run,
+    Cancellation, Child, NativeSession, ProcessExecutor, SetupError, process_options, run,
 )
 
 
@@ -257,6 +258,34 @@ class NativeKeyringTests(unittest.TestCase):
             self.assertIsNotNone(executor.child)
             self.assertIsNotNone(executor.child.poll() if executor.child is not None else None)
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_killed_command_is_reaped_before_group_cleanup_finishes(self) -> None:
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(5)
+            command = [
+                sys.executable, "-c",
+                "import signal,socket,sys,time; "
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                "ready=socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=5); "
+                "ready.sendall(b'r'); ready.close(); time.sleep(60)",
+                str(listener.getsockname()[1]),
+            ]
+            child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     **process_options(True))
+            executor = ProcessExecutor()
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(5)
+                    self.assertEqual(connection.recv(1), b"r")
+                status = executor.wait(child, 5 if os.name == "nt" else 0.4, Cancellation())
+                self.assertEqual(status, 124)
+                self.assertIsNotNone(child.poll())
+            finally:
+                executor.stop(child, 5)
 
     def test_real_cancellation_stops_owned_command_and_removes_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

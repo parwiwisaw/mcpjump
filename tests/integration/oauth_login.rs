@@ -463,7 +463,7 @@ fn a_server_that_answers_without_a_login_needs_none() {
         json!({"server": "demo", "logged_in": false, "auth_required": false})
     );
     assert_eq!(*log.lock().unwrap(), ["list ", "close"]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -491,7 +491,7 @@ fn a_probe_failure_without_a_login_challenge_is_returned() {
             kind
         );
     }
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]

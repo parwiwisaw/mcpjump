@@ -179,7 +179,7 @@ fn inline_and_chunked_token_reads_retain_the_complete_old_record() {
         let new = record::encode(&sized_tokens(&server, size, 'b'));
         read_rejects_writer(&old, &new, RecordKind::Tokens, false, &server);
     }
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]

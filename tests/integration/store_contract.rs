@@ -108,7 +108,7 @@ fn system_file_store_meets_the_contract() {
 fn the_os_keyring_starts_or_is_unavailable() {
     match SystemStores.keyring(&Limits::default(), None).unwrap() {
         KeyringStart::Ready(_) => {}
-        KeyringStart::Unavailable(reason) => assert!(!reason.is_empty()),
+        KeyringStart::Unavailable(reason) => assert_ne!(reason, ""),
     }
 }
 

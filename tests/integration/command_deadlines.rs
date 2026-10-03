@@ -51,7 +51,7 @@ fn token_timeout(command_secs: u64, auth_secs: u64, expected: ErrorKind) {
     let (outcome, connects, browsers) = result.unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(outcome.code, expected.exit_code(), "{}", outcome.err);
-    assert!(outcome.out.is_empty());
+    assert_eq!(outcome.out, "");
     assert_eq!(outcome.error_kind(), expected.as_str());
     assert_eq!(connects, 0);
     assert_eq!(browsers, 0);
@@ -88,7 +88,7 @@ fn a_held_credential_lock_is_clipped_to_the_command_budget() {
         assert_eq!(outcome.code, expected.exit_code());
         assert_eq!(outcome.error_kind(), expected.as_str());
         assert_eq!(h.connector.connects(), 0);
-        assert!(server.paths().is_empty());
+        assert_eq!(server.paths(), Vec::<String>::new());
     }
 }
 
@@ -209,9 +209,9 @@ fn retry_budget(delay: Duration, succeeds: bool) {
         assert_eq!(server.to("/token").len(), 1);
     } else {
         assert_eq!(code, 4);
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<u8>::new());
         assert_eq!(targets.len(), 1);
-        assert!(server.paths().is_empty());
+        assert_eq!(server.paths(), Vec::<String>::new());
     }
 }
 
@@ -242,7 +242,7 @@ fn an_expired_connected_session_closes_before_listing() {
     let code = mcpjump::run(["mcpjump", "tools", "demo"], &deps, &mut out, &mut err);
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(code, ErrorKind::RequestTimeout.exit_code());
-    assert!(out.is_empty());
+    assert_eq!(out, Vec::<u8>::new());
     let outcome = Outcome {
         code,
         out: String::new(),

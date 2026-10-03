@@ -1,6 +1,7 @@
 //! Composition root: the only place real implementations are built and wired.
 
 use std::io;
+use std::process::ExitCode;
 
 use mcpjump::Deps;
 use mcpjump::mcp::connector::HttpConnector;
@@ -14,11 +15,7 @@ use mcpjump::sys::terminal::StdTerminal;
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[allow(
-    clippy::exit,
-    reason = "output is flushed; exit never waits for a keyring thread that has hung"
-)]
-fn main() {
+fn main() -> ExitCode {
     let deps = Deps {
         env: &ProcessEnv,
         connector: &HttpConnector,
@@ -33,5 +30,5 @@ fn main() {
         &mut io::stdout().lock(),
         &mut io::stderr().lock(),
     );
-    std::process::exit(i32::from(code));
+    ExitCode::from(code)
 }

@@ -171,7 +171,10 @@ async fn received_bytes_accumulate_across_pages_at_the_exact_boundary() {
         };
         let outcome = received_scan(pages, limits, None).await;
         if size == 512 {
-            assert!(outcome.unwrap().tools.is_empty());
+            assert_eq!(
+                outcome.unwrap().tools,
+                Vec::<mcpjump::mcp::session::Tool>::new()
+            );
         } else {
             assert_eq!(outcome.unwrap_err().kind(), ErrorKind::ToolListLimit);
         }
@@ -188,7 +191,10 @@ async fn a_terminal_page_at_the_page_limit_succeeds_but_another_cursor_fails() {
         };
         let outcome = received_scan(pages, limits, None).await;
         if cursor.is_none() {
-            assert!(outcome.unwrap().tools.is_empty());
+            assert_eq!(
+                outcome.unwrap().tools,
+                Vec::<mcpjump::mcp::session::Tool>::new()
+            );
         } else {
             assert_eq!(outcome.unwrap_err().kind(), ErrorKind::ToolListLimit);
         }

@@ -89,6 +89,7 @@ def drain_group(child: Child, deadline: float) -> None:
         if not signal_group(child.pid, 0):
             return
         time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+    child.poll()  # Reap a leader killed during the last bounded wait.
     if signal_group(child.pid, 0):
         raise SetupError("owned process group did not exit")
 
@@ -149,7 +150,8 @@ class ProcessExecutor:
                 os.kill(child.pid, signal.SIGKILL)
         else:
             drain_group(child, deadline)
-        child.wait(timeout=remaining(deadline, timeout))
+        if child.poll() is None:
+            child.wait(timeout=remaining(deadline, timeout))
 
     def capture(self, args: Sequence[str], env: Mapping[str, str], timeout: float,
                 *, grouped: bool = True) -> str:

@@ -92,7 +92,7 @@ fn a_fresh_token_is_sent_as_is() {
     h.connector = connected(listing());
     assert_eq!(reply(&tools(&h)), json!([]));
     assert_eq!(bearers(&h), [bearer("at-0")]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn a_token_within_a_minute_of_expiry_is_refreshed_first() {
         reply(&tools(&h));
         if !refreshed {
             assert_eq!(bearers(&h), [bearer("at-0")]);
-            assert!(server.paths().is_empty());
+            assert_eq!(server.paths(), Vec::<String>::new());
             continue;
         }
         assert_eq!(bearers(&h), [bearer("at-1")], "{now}");
@@ -264,7 +264,7 @@ fn a_token_another_process_refreshed_is_used_without_refreshing() {
         .rewriting(path, &text);
     reply(&tools(&h));
     assert_eq!(bearers(&h), [bearer("at-0"), bearer("at-9")]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn without_tokens_nothing_is_sent() {
         assert!(message.ends_with(HINT), "{message}");
         assert_eq!(bearers(&h), ["none"]);
     }
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -383,7 +383,7 @@ fn a_held_server_lock_times_out() {
         let failed = failure(&tools(&h));
         assert_eq!(failed.0, "credential_lock_timeout", "{}", failed.1);
         drop(held);
-        assert!(server.paths().is_empty());
+        assert_eq!(server.paths(), Vec::<String>::new());
     }
 }
 
@@ -414,7 +414,7 @@ fn a_record_corrupted_by_another_process_fails_the_run() {
     h.clock.set(START + 4000);
     h.connector = connected(listing());
     assert_eq!(failure(&tools(&h)).0, "credential_invalid");
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -456,8 +456,8 @@ fn a_403_for_another_reason_is_passed_on() {
     let (server, mut h) = logged_in(Script::default(), "");
     h.connector = FakeConnector::answer(Err(refusal(403, Some("forbidden"), None, None)));
     assert_eq!(failure(&tools(&h)).0, "auth_required");
-    assert!(server.paths().is_empty());
-    assert!(saved(&h).pending_scopes.is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
+    assert_eq!(saved(&h).pending_scopes, Vec::<String>::new());
 }
 
 #[test]
@@ -475,9 +475,9 @@ fn pre_push_red_changed_binding_cannot_supply_a_replacement_bearer() {
     let outcome = tools(&h);
     assert_eq!(outcome.code, 3, "stderr: {}", outcome.err);
     assert_eq!(failure(&outcome).0, "auth_required");
-    assert!(outcome.out.is_empty());
+    assert_eq!(outcome.out, "");
     assert_eq!(bearers(&h), [bearer("at-0")]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
     assert_eq!(h.browser.opens(), 0);
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
@@ -519,11 +519,11 @@ fn reject_changed_binding(change: fn(&mut TokenRecord), rotated: bool, scope: bo
     let outcome = tools(&h);
     assert_eq!(outcome.code, 3, "stderr: {}", outcome.err);
     assert_eq!(failure(&outcome).0, "auth_required");
-    assert!(outcome.out.is_empty());
+    assert_eq!(outcome.out, "");
     assert!(!outcome.err.contains("at-0"));
     assert!(!outcome.err.contains("replacement-bearer"));
     assert_eq!(bearers(&h), [bearer("at-0")]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
     assert_eq!(h.browser.opens(), 0);
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
@@ -561,7 +561,7 @@ fn a_same_binding_rotation_can_keep_requested_pending_scope() {
     assert_eq!(kept.access_token, "at-9");
     assert_eq!(kept.pending_scopes, ["write"]);
     assert_eq!(bearers(&h), [bearer("at-0")]);
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]

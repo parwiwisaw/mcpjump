@@ -108,5 +108,5 @@ async fn a_body_cut_short_is_a_network_error() {
 async fn an_empty_body_is_empty() {
     let base = serve(Router::new().route("/", get(|| async { Body::empty() }))).await;
     let body = read(base, SizeLimit::response(1024), far()).await.unwrap();
-    assert!(body.is_empty());
+    assert_eq!(body, Vec::<u8>::new());
 }

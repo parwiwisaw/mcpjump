@@ -75,7 +75,7 @@ fn optional_token_fields_may_be_absent() {
     let mut minimal = minimal;
     minimal.as_object_mut().unwrap().remove("pending_scopes");
     let decoded = decode::<TokenRecord>(&minimal).unwrap();
-    assert!(decoded.pending_scopes.is_empty());
+    assert_eq!(decoded.pending_scopes, Vec::<String>::new());
     let key = key("demo", RecordKind::Tokens);
     let text = String::from_utf8(record::encode(&decoded)).unwrap();
     assert!(!text.contains("pending_scopes"));

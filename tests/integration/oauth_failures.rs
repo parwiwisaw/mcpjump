@@ -92,7 +92,7 @@ fn names_are_checked_before_anything_else() {
     ] {
         assert_eq!(h.run(args).error_kind(), kind, "{args:?}");
     }
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn a_held_lock_fails_saving_the_tokens() {
     };
     assert!(err.held.is_some(), "save-lock gate was never reached");
     assert_eq!(failure(&outcome).0, "credential_lock_timeout");
-    assert!(outcome.out.is_empty());
+    assert_eq!(outcome.out, "");
     assert!(
         stored::<mcpjump::store::record::TokenRecord>(h.stores.keyring(), RecordKind::Tokens)
             .is_none()

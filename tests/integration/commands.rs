@@ -139,7 +139,7 @@ fn clap_errors_exit_two_on_stderr() {
     for args in [&["add", "-s", "project", "x", URL][..], &[], &["bogus"]] {
         let outcome = h.run(args);
         assert_eq!((outcome.code, outcome.out.as_str()), (2, ""), "{args:?}");
-        assert!(!outcome.err.is_empty());
+        assert_ne!(outcome.err, "");
     }
 }
 
@@ -190,7 +190,7 @@ fn a_reader_that_stops_early_ends_quietly() {
     let h = Harness::new();
     let mut err = Vec::new();
     assert_eq!(h.run_with(&["list"], &mut ClosedPipe, &mut err), 0);
-    assert!(err.is_empty());
+    assert_eq!(err, Vec::<u8>::new());
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn an_unwritable_stderr_still_sets_the_exit_code() {
         h.run_with(&["list"], &mut BrokenWriter, &mut BrokenWriter),
         5
     );
-    assert!(out.is_empty());
+    assert_eq!(out, Vec::<u8>::new());
 }
 
 #[test]
@@ -338,7 +338,7 @@ fn add_json_errors_never_echo_supplied_values() {
         for format in ["json", "text"] {
             let outcome = h.run(&["-o", format, "add-json", "a", definition]);
             assert_eq!(outcome.code, 2);
-            assert!(outcome.out.is_empty());
+            assert_eq!(outcome.out, "");
             assert!(!outcome.err.contains("secret_SENTINEL"), "{}", outcome.err);
             assert!(outcome.err.contains("invalid_definition") || format == "text");
         }

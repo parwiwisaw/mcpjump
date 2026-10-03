@@ -36,7 +36,7 @@ async fn stream_answering(get_answer: fn() -> axum::response::Response) -> Url {
 async fn forcing_sse_skips_streamable_http() {
     let (url, log) = streamable(Arc::new(modern)).await;
     assert_eq!(connect_error(forced(url)).await, "unsupported_server");
-    assert!(entries(&log).is_empty());
+    assert_eq!(entries(&log), Vec::<String>::new());
 }
 
 #[tokio::test]

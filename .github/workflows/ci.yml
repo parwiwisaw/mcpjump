@@ -29,9 +29,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned cargo-dist host release
+        run: python -B -W error "$GITHUB_WORKSPACE/ci/install_cargo_dist.py"
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
         with:
-          tool: cargo-dist@0.33.0,shellcheck@0.11.0
+          tool: shellcheck@0.11.0
       - name: Install pinned actionlint release
         shell: bash
         run: |
@@ -97,6 +102,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - name: Pinned cargo-dist installer boundary tests
+        run: python -B -W error "$GITHUB_WORKSPACE/ci/test_install_cargo_dist.py"
       - name: Native keyring wrapper tests
         run: python -B -W error "$GITHUB_WORKSPACE/ci/test_native_keyring.py"
       - name: Linux native keyring dependencies
@@ -174,6 +181,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - name: Windows instrumented process exit proof
+        if: runner.os == 'Windows'
+        run: python -B -W error "$GITHUB_WORKSPACE/ci/test_windows_profile_exit.py"
       - name: Linux native keyring dependencies
         if: runner.os == 'Linux'
         run: |
@@ -219,6 +229,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - name: Windows instrumented process exit proof
+        if: runner.os == 'Windows'
+        run: python -B -W error "$GITHUB_WORKSPACE/ci/test_windows_profile_exit.py"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Linux native keyring dependencies
         if: runner.os == 'Linux'

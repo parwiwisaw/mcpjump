@@ -63,7 +63,7 @@ fn a_hint_the_url_policy_refuses_is_not_fetched() {
     let h = probed(&server, refusal(401, None, None, Some(hint)), "");
     let (kind, _) = failure(&run_watched(&h, &["login", "demo"], Act::Wait));
     assert_eq!(kind, "url_rejected");
-    assert!(server.paths().is_empty());
+    assert_eq!(server.paths(), Vec::<String>::new());
 }
 
 #[test]
