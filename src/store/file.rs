@@ -32,6 +32,7 @@ impl FileStore {
     }
 
     /// The file that holds `key`, once the directory is known to be safe.
+    #[cfg(unix)]
     fn checked_path(&self, key: &Key) -> Result<PathBuf, Error> {
         check_dir(&self.dir).map_err(|error| io_error(&self.dir, &error))?;
         Ok(self.path(key))
@@ -50,7 +51,10 @@ impl FileStore {
 
 impl CredentialStore for FileStore {
     fn get(&self, key: &Key) -> Result<Option<Vec<u8>>, Error> {
+        #[cfg(unix)]
         let path = self.checked_path(key)?;
+        #[cfg(not(unix))]
+        let path = self.path(key);
         let mut record = Vec::new();
         let limit = MAX_RECORD_BYTES as u64 + 1;
         let read = open_private(&path).and_then(|file| file.take(limit).read_to_end(&mut record));
@@ -64,14 +68,20 @@ impl CredentialStore for FileStore {
 
     fn set(&self, key: &Key, record: &[u8]) -> Result<(), Error> {
         store::check_record(key, record)?;
+        #[cfg(unix)]
         let path = self.checked_path(key)?;
+        #[cfg(not(unix))]
+        let path = self.path(key);
         files::create_private_dir(&self.dir)
             .and_then(|()| files::write_atomic(&path, record))
             .map_err(|error| io_error(&path, &error))
     }
 
     fn delete(&self, key: &Key) -> Result<(), Error> {
+        #[cfg(unix)]
         let path = self.checked_path(key)?;
+        #[cfg(not(unix))]
+        let path = self.path(key);
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -93,13 +103,6 @@ fn check_dir(dir: &Path) -> io::Result<()> {
         return Err(unsafe_file("is not a directory; move it aside"));
     }
     private_mode(metadata.mode(), "700")
-}
-
-/// Windows directories inherit the user-only ACL of `%APPDATA%`.
-#[cfg(not(unix))]
-#[allow(clippy::unnecessary_wraps, reason = "matches the Unix check")]
-fn check_dir(_dir: &Path) -> io::Result<()> {
-    Ok(())
 }
 
 /// Opens a credential file without following a symlink or blocking on a

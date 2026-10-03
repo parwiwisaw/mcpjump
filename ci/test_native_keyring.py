@@ -252,8 +252,10 @@ class NativeKeyringTests(unittest.TestCase):
     def test_real_timeout_stops_owned_command_and_removes_fixture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executor = RecordingProcesses()
-            status = run([sys.executable, "-c", "import time; time.sleep(60)"], 0.4,
+            started = time.monotonic()
+            status = run([sys.executable, "-c", "import time; time.sleep(60)"], 5,
                          environment(Path(directory), "Windows"), executor, Cancellation())
+            self.assertLess(time.monotonic() - started, 10)
             self.assertEqual(status, 124)
             self.assertIsNotNone(executor.child)
             self.assertIsNotNone(executor.child.poll() if executor.child is not None else None)
@@ -281,7 +283,9 @@ class NativeKeyringTests(unittest.TestCase):
                 with connection:
                     connection.settimeout(5)
                     self.assertEqual(connection.recv(1), b"r")
-                status = executor.wait(child, 5 if os.name == "nt" else 0.4, Cancellation())
+                started = time.monotonic()
+                status = executor.wait(child, 5, Cancellation())
+                self.assertLess(time.monotonic() - started, 10)
                 self.assertEqual(status, 124)
                 self.assertIsNotNone(child.poll())
             finally:
