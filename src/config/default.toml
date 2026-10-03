@@ -1,0 +1,40 @@
+# mcpjump configuration. Every setting is shown with its default.
+# Keys you delete fall back to the same defaults.
+
+[settings]
+credential_store = "auto"        # auto | keyring | file
+output = "json"                  # json | text
+client_metadata_url = ""         # CIMD URL; empty disables CIMD
+
+[limits]
+connect_timeout_secs = 5         # 1..=60
+request_timeout_secs = 15        # 1..=300, per non-tool request
+auth_network_budget_secs = 60    # 1..=600, total network time for discovery + token calls
+tool_timeout_secs = 120          # 1..=3600, total per tools/call; run --timeout overrides
+stream_idle_secs = 30            # 1..=600
+login_timeout_secs = 300         # 30..=1800, waiting for callback or paste
+validation_timeout_secs = 2      # 1..=30, schema compile + validate
+stdin_timeout_secs = 30          # 1..=600, reading params from stdin (`run -`)
+browser_timeout_secs = 5         # 1..=30, launching the browser (continue with printed URL on timeout)
+keyring_timeout_secs = 3         # 1..=60
+lock_wait_secs = 20              # 1..=600; must be greater than request_timeout_secs
+max_response_bytes = 16777216    # 1 KiB..=256 MiB, per decoded response or SSE event
+max_metadata_bytes = 1048576     # 1 KiB..=16 MiB, per OAuth/metadata document
+max_params_bytes = 1048576       # 1 KiB..=64 MiB
+max_json_depth = 64              # 8..=256
+max_tool_pages = 100             # 1..=10000
+max_tools = 1000                 # 1..=100000
+max_tools_bytes = 16777216       # 1 KiB..=256 MiB, aggregate tools/list bytes
+
+# Servers are added by `mcpjump add`. An entry looks like this:
+#
+# [servers.example]
+# url = "https://example.com/mcp"
+# transport = "http"               # http (probe all) | sse (force HTTP+SSE)
+# generation = "modern"            # detected; modern | legacy_streamable | sse
+# headers = { "X-Api-Key" = "${EXAMPLE_KEY}" }
+# client_id = ""                   # pre-registered client (secret lives in the credential store)
+# callback_port = 0                # 0 = ephemeral
+# credentials = "keyring"          # backend used at last login; keyring | file
+
+[servers]

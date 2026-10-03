@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Bumped deliberately, together with the local toolchain used for branch coverage.
+  BRANCH_NIGHTLY: nightly-2026-09-28
+  LLVM_COV_VERSION: 0.9.1
+
+jobs:
+  release-template:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_HTTP_TIMEOUT: 30
+      CARGO_NET_RETRY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
+        with:
+          tool: cargo-dist@0.33.0,actionlint@1.7.11,shellcheck@0.11.0
+      - run: python3 -W error "$GITHUB_WORKSPACE/ci/normalize_dist_workflow.py"
+      - run: python3 -B -W error "$GITHUB_WORKSPACE/ci/test_release_tags.py"
+      - run: actionlint
+      - run: git diff --exit-code -- .github/workflows/release.yml
+
+  npm-packaging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      npm_config_fetch_retries: 0
+      npm_config_fetch_timeout: 15000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci --prefix "$GITHUB_WORKSPACE/npm/tools" --ignore-scripts --no-audit --no-fund
+      - run: node "$GITHUB_WORKSPACE/npm/tools/node_modules/typescript/bin/tsc" --project "$GITHUB_WORKSPACE/npm/tools/tsconfig.json"
+      - run: node "$GITHUB_WORKSPACE/npm/tools/node_modules/eslint/bin/eslint.js" --config "$GITHUB_WORKSPACE/npm/tools/eslint.config.mjs" "$GITHUB_WORKSPACE/npm/bin/mcpjump.js" "$GITHUB_WORKSPACE/npm/pack.mjs"
+      - run: node --test --test-timeout=35000 "$GITHUB_WORKSPACE/npm/tests/launcher.test.mjs" "$GITHUB_WORKSPACE/npm/tests/pack.test.mjs"
+
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      RUSTFLAGS: -D warnings
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-targets -- --include-ignored
+      - run: cargo doc --locked --no-deps
+
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo check --locked --all-targets
+
+  deny:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+  composition-root:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/composition_root.sh
+
+  coverage:
+    name: coverage (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, exclusions: macos }
+          - { os: ubuntu-24.04, exclusions: linux }
+          - { os: windows-2025, exclusions: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-llvm-cov@${{ env.LLVM_COV_VERSION }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Coverage (lines, functions, regions)
+        run: |
+          ignore=$(paste -sd'|' "coverage-exclusions/${{ matrix.exclusions }}.txt")
+          args=()
+          if [ -n "$ignore" ]; then args+=(--ignore-filename-regex "$ignore"); fi
+          cargo llvm-cov --locked --all-targets "${args[@]}" \
+            --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100 \
+            --show-missing-lines -- --include-ignored
+
+  coverage-branch:
+    name: coverage-branch (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, exclusions: macos }
+          - { os: ubuntu-24.04, exclusions: linux }
+          - { os: windows-2025, exclusions: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: ${{ env.BRANCH_NIGHTLY }}
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-llvm-cov@${{ env.LLVM_COV_VERSION }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Branch coverage report
+        run: |
+          ignore=$(paste -sd'|' "coverage-exclusions/${{ matrix.exclusions }}.txt")
+          args=()
+          if [ -n "$ignore" ]; then args+=(--ignore-filename-regex "$ignore"); fi
+          cargo +"$BRANCH_NIGHTLY" llvm-cov --locked --all-targets --branch "${args[@]}" \
+            --json --summary-only --output-path coverage.json -- --include-ignored
+      - name: Branch gate (100%)
+        run: python ci/branch_gate.py coverage.json

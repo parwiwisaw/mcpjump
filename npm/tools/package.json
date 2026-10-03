@@ -1,0 +1,9 @@
+{
+  "name": "mcpjump-packaging-tools",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "eslint": "10.12.0",
+    "typescript": "7.0.2"
+  }
+}

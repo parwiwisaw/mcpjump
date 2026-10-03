@@ -1,0 +1,58 @@
+# cargo-deny policy. Run with `cargo deny check`.
+
+[graph]
+# Release and native CI targets; dependencies for other targets are not checked.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# Every advisory, unmaintained and yanked crate fails the check. An ignore
+# entry needs the advisory ID and a reason.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with distributing under MIT OR Apache-2.0.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# The allow-list is the policy, not an inventory of current dependencies.
+unused-allowed-license = "allow"
+exceptions = []
+
+[bans]
+# Two versions of one crate fail the check, so a second reqwest, hyper or
+# rustls cannot slip in. A skip entry needs a reason.
+multiple-versions = "deny"
+wildcards = "deny"
+highlight = "all"
+skip = [
+    # jsonschema's ahash uses getrandom 0.3, tempfile uses 0.4. Both are small
+    # OS-entropy shims with no shared state.
+    { crate = "getrandom@0.3", reason = "ahash (jsonschema) has not moved to 0.4" },
+    # syn is a build-time proc-macro dependency; two majors add compile time only.
+    { crate = "syn@2", reason = "strum_macros and tracing-attributes use syn 2, clap_derive syn 3" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

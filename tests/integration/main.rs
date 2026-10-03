@@ -1,0 +1,35 @@
+//! Integration tests, compiled as one binary. Test code may unwrap: a panic
+//! is a test failure with its location.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod commands;
+mod config;
+mod credentials_cli;
+mod env_contract;
+mod errors;
+mod files;
+mod http_body;
+mod http_client;
+mod http_sse;
+mod mcp_contract;
+mod mcp_inhouse;
+mod mcp_probe;
+mod mcp_sse;
+mod mcp_streamable;
+mod mcp_wire;
+mod mcp_wire_pending;
+mod oauth_discovery;
+mod oauth_failures;
+mod oauth_login;
+mod oauth_refresh;
+mod store_chunk;
+mod store_contract;
+mod store_file;
+mod store_keyring;
+mod store_record;
+mod store_select;
+mod support;
+mod tool_scan;
+mod tools_run;
+mod url_policy;
+mod validate;

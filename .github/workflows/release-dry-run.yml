@@ -1,0 +1,117 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Build and install (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_HTTP_TIMEOUT: 30
+      CARGO_NET_RETRY: 0
+      npm_config_fetch_retries: 0
+      npm_config_fetch_timeout: 15000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
+        with:
+          tool: cargo-dist@0.33.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install native musl compiler
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=30 install -y musl-tools pkg-config
+          echo 'CC_x86_64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
+          echo 'CC_aarch64_unknown_linux_musl=musl-gcc' >> "$GITHUB_ENV"
+      - run: dist plan
+      - name: Build release archive
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          dist build --artifacts local --target "$RELEASE_TARGET" --output-format=json > "$RUNNER_TEMP/${RELEASE_TARGET}-dist-manifest.json"
+          cp "$RUNNER_TEMP/${RELEASE_TARGET}-dist-manifest.json" "$GITHUB_WORKSPACE/target/distrib/"
+      - name: Test native npm installation with scripts disabled
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          node "$GITHUB_WORKSPACE/npm/pack.mjs" "$GITHUB_WORKSPACE/target/distrib" "$RUNNER_TEMP/npm-packages" "$RELEASE_TARGET"
+          npm install --prefix "$RUNNER_TEMP/npm-prefix" --ignore-scripts --offline --no-audit --no-fund "$RUNNER_TEMP"/npm-packages/*.tgz
+          node "$RUNNER_TEMP/npm-prefix/node_modules/mcpjump/bin/mcpjump.js" --version
+      - name: Test musl binary on Alpine as well as Ubuntu
+        if: runner.os == 'Linux'
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: |
+          binary="$GITHUB_WORKSPACE/target/${RELEASE_TARGET}/dist/mcpjump"
+          "$binary" --version
+          timeout 120 docker run --rm --network none -v "$binary:/mcpjump:ro" alpine:3.22 /mcpjump --version
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dry-run-archives-${{ matrix.target }}
+          path: target/distrib/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dry-run-npm-${{ matrix.target }}
+          path: ${{ runner.temp }}/npm-packages/*.tgz
+          if-no-files-found: error
+
+  global:
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
+        with:
+          tool: cargo-dist@0.33.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: dry-run-archives-*
+          merge-multiple: true
+          path: target/distrib
+      - run: dist build --artifacts global
+      - run: node "$GITHUB_WORKSPACE/npm/pack.mjs" "$GITHUB_WORKSPACE/target/distrib" "$RUNNER_TEMP/npm-packages"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dry-run-release-bundle
+          path: target/distrib/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dry-run-npm-bundle
+          path: ${{ runner.temp }}/npm-packages/*.tgz
+          if-no-files-found: error

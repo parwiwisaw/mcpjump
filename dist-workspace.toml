@@ -1,0 +1,48 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false
+tap = "parwiwisaw/homebrew-tap"
+github-attestations = true
+publish-jobs = ["homebrew", "./publish-npm", "./publish-crates"]
+pr-run-mode = "plan"
+github-build-setup = "../../ci/release-build-setup.yml"
+# CI verifies dist output after the small ShellCheck normalization in ci/.
+allow-dirty = ["ci"]
+
+[dist.github-custom-job-permissions]
+publish-npm = { contents = "read", id-token = "write" }
+publish-crates = { contents = "read", id-token = "write" }
+
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
+x86_64-unknown-linux-musl = "ubuntu-24.04"
+aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
+x86_64-pc-windows-msvc = "windows-2025"
+
+[dist.dependencies.apt]
+musl-tools = "*"
+pkg-config = "*"
+
+[dist.github-action-commits]
+"actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1"
+"actions/upload-artifact" = "b7c566a772e6b6bfb58ed0dc250532a479d7789f"
+"actions/download-artifact" = "634f93cb2916e3fdff6788551b99b062d0335ce0"
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6"
+"Swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"

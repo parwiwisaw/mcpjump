@@ -1,0 +1,45 @@
+name: Publish npm packages
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      npm_config_fetch_retries: 0
+      npm_config_fetch_timeout: 15000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.17.0 --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+          path: artifacts
+      - name: Package release archives
+        run: node "$GITHUB_WORKSPACE/npm/pack.mjs" "$GITHUB_WORKSPACE/artifacts" "$RUNNER_TEMP/npm-packages"
+      - name: Publish platform packages, then the wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in "$RUNNER_TEMP"/npm-packages/mcpjump-cli-*.tgz; do
+            timeout 60 npm publish "$package" --access public --provenance --ignore-scripts
+          done
+          version=$(node -p "require(process.env.GITHUB_WORKSPACE + '/npm/package.json').version")
+          timeout 60 npm publish "$RUNNER_TEMP/npm-packages/mcpjump-${version}.tgz" --access public --provenance --ignore-scripts

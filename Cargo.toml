@@ -1,0 +1,86 @@
+[package]
+name = "mcpjump"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Call tools on remote HTTP MCP servers from the command line"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/parwiwisaw/mcpjump"
+homepage = "https://github.com/parwiwisaw/mcpjump"
+readme = "README.md"
+keywords = ["mcp", "cli", "oauth", "model-context-protocol"]
+categories = ["command-line-utilities"]
+include = ["/src/**/*", "/tests/**/*", "/LICENSE-*", "/README.md", "/CHANGELOG.md"]
+
+[dependencies]
+base64 = "0.23.1"
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive"] }
+comfy-table = { version = "8.0.0", default-features = false }
+futures = { version = "0.3.34", default-features = false, features = ["std"] }
+getrandom = "0.4.3"
+httparse = "1.10.1"
+jsonschema = { version = "=0.58.2", default-features = false }
+keyring-core = "1.0.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "json", "stream"] }
+# Pinned exactly: an upgrade must pass the hostile fixtures again.
+rmcp = { version = "=3.5.0", default-features = false, features = [] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11.0"
+# The single parser used by the bounded HTTP SSE reader.
+sse-stream = "=0.2.6"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["io-util", "net", "rt", "sync", "time"] }
+toml_edit = { version = "0.25.15", features = ["serde"] }
+url = { version = "2.5.8", features = ["serde"] }
+webbrowser = "1.2.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+mimalloc = { version = "=0.1.52", default-features = false }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+too_many_lines = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

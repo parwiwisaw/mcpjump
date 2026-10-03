@@ -1,0 +1,10 @@
+/target
+/spikes
+*.profraw
+*.profdata
+lcov.info
+coverage.json
+.DS_Store
+/npm/tools/node_modules
+/.agents
+/HANDOFF*.md

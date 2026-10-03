@@ -1,0 +1,18 @@
+{
+  "name": "mcpjump",
+  "version": "0.1.0",
+  "description": "Call tools on remote HTTP MCP servers from the command line",
+  "license": "MIT OR Apache-2.0",
+  "repository": {"type": "git", "url": "https://github.com/parwiwisaw/mcpjump"},
+  "engines": {"node": ">=22"},
+  "bin": {"mcpjump": "bin/mcpjump.js"},
+  "files": ["bin", "README.md", "LICENSE-MIT", "LICENSE-APACHE"],
+  "optionalDependencies": {
+    "@mcpjump/cli-darwin-arm64": "0.1.0",
+    "@mcpjump/cli-darwin-x64": "0.1.0",
+    "@mcpjump/cli-linux-x64": "0.1.0",
+    "@mcpjump/cli-linux-arm64": "0.1.0",
+    "@mcpjump/cli-win32-x64": "0.1.0"
+  },
+  "publishConfig": {"access": "public"}
+}
