@@ -6,7 +6,7 @@ import argparse
 from dataclasses import dataclass
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shlex
@@ -261,7 +261,7 @@ class NativeSession:
         assert self.root is not None
         default = shlex.split(self.command(["security", "default-keychain", "-d", "user"], deadline))
         search = shlex.split(self.command(["security", "list-keychains", "-d", "user"], deadline))
-        if len(default) != 1 or len(search) > 64 or any(not Path(path).is_absolute() for path in default + search):
+        if len(default) != 1 or len(search) > 64 or any(not PurePosixPath(path).is_absolute() for path in default + search):
             raise SetupError("keychain snapshot invalid")
         self.original_default, self.original_search = default[0], search
         self.keychain = self.root / "ci.keychain-db"

@@ -39,7 +39,6 @@ pub struct SseLimits {
 /// [`SseError::Body`] holding an [`Error`] with the matching kind. An error
 /// ends the stream at once: events still queued from the chunk that caused
 /// it are discarded.
-#[must_use]
 pub fn events(response: Response, limits: SseLimits) -> BoxStream<'static, Result<Sse, SseError>> {
     let reader = Reader {
         origin: response.url().origin().ascii_serialization(),

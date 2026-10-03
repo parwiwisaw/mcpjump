@@ -31,7 +31,22 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29
         with:
-          tool: cargo-dist@0.33.0,actionlint@1.7.11,shellcheck@0.11.0
+          tool: cargo-dist@0.33.0,shellcheck@0.11.0
+      - name: Install pinned actionlint release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_dir="$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")"
+          trap 'rm -f "$tools_dir/actionlint.tar.gz"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+            --connect-timeout 10 --max-time 60 --max-filesize 16777216 --retry 0 \
+            --output "$tools_dir/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a \
+            "$tools_dir/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "$tools_dir/actionlint.tar.gz" -C "$tools_dir" actionlint
+          printf '%s\n' "$tools_dir" >> "$GITHUB_PATH"
       - run: python3 -W error "$GITHUB_WORKSPACE/ci/normalize_dist_workflow.py"
       - run: python3 -B -W error "$GITHUB_WORKSPACE/ci/test_release_tags.py"
       - run: actionlint

@@ -351,13 +351,33 @@ fn name(raw: &str) -> ServerName {
 const WAIT: Duration = Duration::from_secs(5);
 
 #[test]
+fn crlf_template_updates_preserve_content_with_normalized_newlines() {
+    let dir = Dir::new();
+    let lf_template = TEMPLATE.replace("\r\n", "\n");
+    let crlf_template = lf_template.replace('\n', "\r\n");
+    dir.write(&crlf_template);
+    dir.file
+        .update(WAIT, &|doc| insert_server(doc, &name("a"), &spec()))
+        .unwrap();
+    let text = dir.text();
+    assert!(!text.starts_with(&crlf_template));
+    assert_eq!(
+        text,
+        format!(
+            "{lf_template}\n[servers.a]\nurl = \"https://example.com/mcp\"\ntransport = \"http\"\n"
+        )
+    );
+}
+
+#[test]
 fn the_first_update_writes_the_template_and_keeps_comments() {
     let dir = Dir::new();
     dir.file
         .update(WAIT, &|doc| insert_server(doc, &name("a"), &spec()))
         .unwrap();
     let text = dir.text();
-    assert!(text.starts_with(TEMPLATE), "{text}");
+    let template = TEMPLATE.replace("\r\n", "\n");
+    assert!(text.starts_with(&template), "{text}");
     assert!(
         text.ends_with("\n[servers.a]\nurl = \"https://example.com/mcp\"\ntransport = \"http\"\n"),
         "{text}"
@@ -366,7 +386,7 @@ fn the_first_update_writes_the_template_and_keeps_comments() {
         .update(WAIT, &|doc| remove_server(doc, &name("a")))
         .unwrap();
     assert_eq!(dir.file.load().unwrap(), Config::default());
-    assert!(dir.text().starts_with(TEMPLATE));
+    assert!(dir.text().starts_with(&template));
 }
 
 #[test]

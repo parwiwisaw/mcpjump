@@ -129,6 +129,40 @@ class NativeKeyringTests(unittest.TestCase):
             password = next(call[3] for call in executor.calls if "create-keychain" in call)
             self.assertNotIn(password, " ".join(messages))
 
+    def test_macos_snapshot_rejects_non_posix_paths_before_state_changes(self) -> None:
+        class SnapshotExecutor(RecordingExecutor):
+            default_snapshot = ""
+            search_snapshot = ""
+
+            def capture(self, args: Sequence[str], env: Mapping[str, str], timeout: float,
+                        *, grouped: bool = True) -> str:
+                result = super().capture(args, env, timeout, grouped=grouped)
+                if list(args) == ["security", "default-keychain", "-d", "user"]:
+                    return self.default_snapshot
+                if list(args) == ["security", "list-keychains", "-d", "user"]:
+                    return self.search_snapshot
+                return result
+
+        for default, search in (
+            ('"relative.keychain-db"', '"/runner/search.keychain-db"'),
+            ('"/runner/default.keychain-db"', '"relative.keychain-db"'),
+            ('"C:/runner/default.keychain-db"', '"C:/runner/search.keychain-db"'),
+        ):
+            with self.subTest(default=default, search=search), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                executor = SnapshotExecutor()
+                executor.default_snapshot, executor.search_snapshot = default, search
+                messages: list[str] = []
+                status = run(["fixture-cargo"], 900, environment(root, "macOS"), executor,
+                             Cancellation(), log=messages.append)
+                self.assertEqual(status, 1)
+                self.assertEqual(executor.calls, [
+                    ("security", "default-keychain", "-d", "user"),
+                    ("security", "list-keychains", "-d", "user"),
+                ])
+                self.assertEqual(list(root.iterdir()), [])
+                self.assertEqual(len(messages), 1)
+
     def test_macos_cargo_failure_preserves_exit_and_exact_original_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executor = RecordingExecutor(status=7)

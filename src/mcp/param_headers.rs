@@ -209,11 +209,10 @@ mod generation_tests {
         let nested = json!({"properties":{"a":{"properties":{"b":{"properties":{"c":{"x-mcp-header":"C"}}}}}}});
         assert!(annotations(&nested).is_none());
         assert!(annotations(&schema(&json!("a".repeat(65_535)), "string")).is_none());
-        assert!(annotations(&json!({})).unwrap().is_empty());
-        assert!(
-            annotations(&json!({"properties":{"a":{},"b":{"properties":{"c":{}}}}}))
-                .unwrap()
-                .is_empty()
+        assert_eq!(annotations(&json!({})), Some(Vec::<Annotation>::new()));
+        assert_eq!(
+            annotations(&json!({"properties":{"a":{},"b":{"properties":{"c":{}}}}})),
+            Some(Vec::<Annotation>::new())
         );
     }
 

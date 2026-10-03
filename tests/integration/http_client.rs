@@ -120,8 +120,11 @@ async fn a_stalled_handshake_hits_the_connect_timeout() {
 
 #[tokio::test]
 async fn refused_and_dropped_connections_are_network_errors() {
+    // Allow Windows to report a refused TCP connection before the fixture timeout.
+    let http = HttpClient::new(Duration::from_secs(5), USER_AGENT).unwrap();
     for base in [closed_port().await, raw(hang_up).await] {
-        let error = get_path(&base, "/").await.unwrap_err();
+        let request = http.request(Method::GET, base.clone(), Redirects::SameOrigin);
+        let error = http.send(request, far()).await.unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Network, "{base}");
         let prefix = format!("could not reach {}: ", origin(&base));
         assert!(error.message().starts_with(&prefix), "{}", error.message());

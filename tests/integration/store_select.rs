@@ -138,9 +138,11 @@ fn auto_without_a_keyring_falls_back_to_the_file_with_a_notice() {
     let selected = choose(&opener, None, CredentialStoreKind::Auto).unwrap();
     assert_eq!(selected.backend, Backend::File);
     let notice = selected.warning.unwrap();
+    let credentials = Path::new("/home/me/.config/mcpjump").join("credentials");
+    let unencrypted = format!("UNENCRYPTED in {}", credentials.display());
     for part in [
         "no OS keyring is available (no keyring daemon)",
-        "UNENCRYPTED in /home/me/.config/mcpjump/credentials",
+        &unencrypted,
         "`mcpjump logout demo` and `mcpjump login demo`",
         "credential_store = \"file\" in /home/me/.config/mcpjump/config.toml",
     ] {
