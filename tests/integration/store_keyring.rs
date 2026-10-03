@@ -18,7 +18,7 @@ const WINDOWS_ENTRY: usize = 2560;
 const MAIN: &str = "demo/tokens";
 
 fn windows_store(fake: &FakeKeyring) -> KeyringStore {
-    KeyringStore::new(fake.platform(), WINDOWS_ENTRY, Duration::from_secs(5))
+    KeyringStore::new(fake.platform(), WINDOWS_ENTRY, Duration::from_secs(5), None)
 }
 
 fn tokens() -> mcpjump::store::Key {
@@ -270,7 +270,12 @@ fn keyring_errors_name_the_cause_but_never_stored_bytes() {
 fn a_keyring_that_stalls_times_out() {
     let fake = FakeKeyring::default();
     fake.state().delay = Duration::from_millis(500);
-    let store = KeyringStore::new(fake.platform(), WINDOWS_ENTRY, Duration::from_millis(50));
+    let store = KeyringStore::new(
+        fake.platform(),
+        WINDOWS_ENTRY,
+        Duration::from_millis(50),
+        None,
+    );
     let error = store.get(&tokens()).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::KeyringTimeout);
     assert!(error.message().contains("keyring_timeout_secs"));
@@ -299,17 +304,159 @@ fn hangs() -> keyring_core::Result<PlatformStore> {
 #[test]
 fn opening_distinguishes_ready_unavailable_refused_and_stalled() {
     let second = Duration::from_secs(1);
-    let store = match keyring::open(ready, WINDOWS_ENTRY, second).unwrap() {
+    let store = match keyring::open(ready, WINDOWS_ENTRY, second, None).unwrap() {
         KeyringStart::Ready(store) => store,
         KeyringStart::Unavailable(reason) => panic!("unavailable: {reason}"),
     };
     store.set(&tokens(), b"{}").unwrap();
-    match keyring::open(unsupported, WINDOWS_ENTRY, second).unwrap() {
+    match keyring::open(unsupported, WINDOWS_ENTRY, second, None).unwrap() {
         KeyringStart::Unavailable(reason) => assert!(reason.contains("no Secret Service")),
         KeyringStart::Ready(_) => panic!("expected unavailable"),
     }
-    let refused = keyring::open(refused, WINDOWS_ENTRY, second).unwrap_err();
+    let refused = keyring::open(refused, WINDOWS_ENTRY, second, None).unwrap_err();
     assert_eq!(refused.kind(), ErrorKind::CredentialStore);
-    let stalled = keyring::open(hangs, WINDOWS_ENTRY, Duration::from_millis(50)).unwrap_err();
+    let stalled = keyring::open(hangs, WINDOWS_ENTRY, Duration::from_millis(50), None).unwrap_err();
     assert_eq!(stalled.kind(), ErrorKind::KeyringTimeout);
+}
+
+fn gated_deadline(
+    operation: crate::support::fakes::keyring::Operation,
+    own: Duration,
+    command: Duration,
+    expected: ErrorKind,
+) {
+    use crate::support::fakes::keyring::Operation;
+    use std::sync::mpsc;
+    use tokio::time::Instant;
+
+    let fake = FakeKeyring::default();
+    let mut gate = fake.gate(MAIN, operation);
+    let store = KeyringStore::new(
+        fake.platform(),
+        WINDOWS_ENTRY,
+        own,
+        Some(Instant::now() + command),
+    );
+    let (sent, done) = mpsc::sync_channel(1);
+    let started = std::time::Instant::now();
+    let worker = thread::spawn(move || {
+        let result = match operation {
+            Operation::Get => store.get(&tokens()).map(drop),
+            Operation::Set => store.set(&tokens(), b"{}"),
+            Operation::Delete => store.delete(&tokens()),
+        };
+        let _ = sent.send((store, result));
+    });
+    gate.wait_reached();
+    let (store, result) = done.recv_timeout(Duration::from_secs(2)).unwrap();
+    let elapsed = started.elapsed();
+    let mut tail =
+        (operation == Operation::Delete).then(|| fake.gate("demo/tokens@1#15", Operation::Delete));
+    gate.release();
+    gate.wait_completed();
+    if let Some(tail) = &mut tail {
+        tail.wait_reached();
+        tail.release();
+        tail.wait_completed();
+    }
+    worker.join().unwrap();
+    assert_eq!(result.unwrap_err().kind(), expected);
+    assert!(elapsed < Duration::from_secs(2));
+    if expected == ErrorKind::RequestTimeout {
+        let calls = fake.state().calls;
+        assert_eq!(
+            store.get(&tokens()).unwrap_err().kind(),
+            ErrorKind::RequestTimeout
+        );
+        assert_eq!(
+            store.set(&tokens(), b"{}").unwrap_err().kind(),
+            ErrorKind::RequestTimeout
+        );
+        assert_eq!(
+            store.delete(&tokens()).unwrap_err().kind(),
+            ErrorKind::RequestTimeout
+        );
+        assert_eq!(fake.state().calls, calls);
+    }
+}
+
+#[test]
+fn every_keyring_operation_uses_a_fractional_command_budget_and_recomputes_it() {
+    use crate::support::fakes::keyring::Operation;
+    for operation in [Operation::Get, Operation::Set, Operation::Delete] {
+        gated_deadline(
+            operation,
+            Duration::from_secs(3),
+            Duration::from_millis(250),
+            ErrorKind::RequestTimeout,
+        );
+    }
+}
+
+#[test]
+fn an_earlier_independent_keyring_limit_keeps_its_own_error() {
+    use crate::support::fakes::keyring::Operation;
+    gated_deadline(
+        Operation::Get,
+        Duration::from_millis(50),
+        Duration::from_secs(3),
+        ErrorKind::KeyringTimeout,
+    );
+}
+
+#[test]
+fn an_expired_command_starts_no_credential_worker() {
+    let fake = FakeKeyring::default();
+    let store = KeyringStore::new(
+        fake.platform(),
+        WINDOWS_ENTRY,
+        Duration::from_secs(3),
+        Some(tokio::time::Instant::now()),
+    );
+    assert_eq!(
+        store.get(&tokens()).unwrap_err().kind(),
+        ErrorKind::RequestTimeout
+    );
+    assert_eq!(
+        store.set(&tokens(), b"{}").unwrap_err().kind(),
+        ErrorKind::RequestTimeout
+    );
+    assert_eq!(
+        store.delete(&tokens()).unwrap_err().kind(),
+        ErrorKind::RequestTimeout
+    );
+    assert_eq!(fake.state().calls, 0);
+}
+
+#[test]
+fn keyring_startup_uses_the_command_cap_without_retaining_a_credential_lock() {
+    use mcpjump::config::validate::ServerName;
+    use mcpjump::store::lock;
+    use tokio::time::Instant;
+
+    let dir = tempfile::tempdir().unwrap();
+    let name = ServerName::parse("demo").unwrap();
+    let held = lock::server_lock(dir.path(), &name, Duration::ZERO, None).unwrap();
+    let started = std::time::Instant::now();
+    let result = keyring::open(
+        hangs,
+        WINDOWS_ENTRY,
+        Duration::from_secs(3),
+        Some(Instant::now() + Duration::from_millis(250)),
+    );
+    assert_eq!(
+        result.as_ref().unwrap_err().kind(),
+        ErrorKind::RequestTimeout
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    lock::release(held, &result);
+    lock::server_lock(dir.path(), &name, Duration::ZERO, None).unwrap();
+    let expired = keyring::open(
+        refused,
+        WINDOWS_ENTRY,
+        Duration::from_secs(3),
+        Some(Instant::now()),
+    )
+    .unwrap_err();
+    assert_eq!(expired.kind(), ErrorKind::RequestTimeout);
 }

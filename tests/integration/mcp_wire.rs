@@ -1051,3 +1051,74 @@ async fn legacy_http_discover_signal_preserves_modern_rejection_classification()
         }
     }
 }
+
+#[tokio::test]
+async fn pre_push_mcp_red_sse_500_preserves_http_failure_without_fallback() {
+    let fixture = Fixture::new(vec![status("GET", 500)]).await;
+    let failed = connect(quick(&fixture, Some(Generation::Sse)))
+        .await
+        .unwrap_err();
+    assert_error(&failed, "http_status");
+    assert!(failed.message().contains("HTTP 500"));
+    assert_eq!(labels(&fixture), ["GET"]);
+    fixture.finished();
+}
+
+#[tokio::test]
+async fn saved_and_forced_sse_500_and_429_end_after_the_get() {
+    for forced in [false, true] {
+        for code in [500, 429] {
+            let fixture = Fixture::new(vec![status("GET", code)]).await;
+            let mut target = quick(&fixture, Some(Generation::Sse));
+            if forced {
+                target.transport = Transport::Sse;
+            }
+            let failed = connect(target).await.unwrap_err();
+            assert_error(&failed, "http_status");
+            assert!(failed.message().contains(&format!("HTTP {code}")));
+            assert_eq!(labels(&fixture), ["GET"]);
+            fixture.finished();
+        }
+    }
+}
+
+#[tokio::test]
+async fn sse_http_failures_do_not_resave_generation_in_the_real_command() {
+    for transport in ["http", "sse"] {
+        for code in [500, 429] {
+            let fixture = Fixture::new(vec![status("GET", code)]).await;
+            let config = format!(
+                "[servers.demo]\nurl = \"{}\"\ntransport = \"{transport}\"\ngeneration = \"sse\"\n",
+                fixture.url
+            );
+            let worker = tokio::task::spawn_blocking(move || {
+                let h = crate::support::Harness::new();
+                h.write_config(&config);
+                let connector = mcpjump::mcp::connector::HttpConnector;
+                let deps = mcpjump::Deps {
+                    connector: &connector,
+                    ..h.deps()
+                };
+                let (mut out, mut err) = (Vec::new(), Vec::new());
+                let code = mcpjump::run(["mcpjump", "tools", "demo"], &deps, &mut out, &mut err);
+                assert_eq!(h.config_text(), config);
+                assert_eq!(h.stores.opened(), 0);
+                assert_eq!(h.browser.opens(), 0);
+                crate::support::Outcome {
+                    code,
+                    out: String::from_utf8(out).unwrap(),
+                    err: String::from_utf8(err).unwrap(),
+                }
+            });
+            let outcome = tokio::time::timeout(Duration::from_secs(5), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome.code, 4);
+            assert_eq!(outcome.error_kind(), "http_status");
+            assert!(outcome.err.contains(&format!("HTTP {code}")));
+            assert_eq!(labels(&fixture), ["GET"]);
+            fixture.finished();
+        }
+    }
+}

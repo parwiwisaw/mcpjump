@@ -4,12 +4,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use tokio::time::Instant;
 use toml_edit::DocumentMut;
 
+use crate::config::document;
 use crate::config::model::{Config, RawConfig};
 use crate::error::{Error, ErrorKind};
 use crate::files;
 use crate::sys::Platform;
+use crate::sys::deadline::{self, Limit, clipped_wait};
 use crate::sys::env::Env;
 
 /// Largest config file accepted.
@@ -104,12 +107,38 @@ impl ConfigFile {
         wait: Duration,
         edit: &dyn Fn(&mut DocumentMut) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.update_with_deadline(wait, None, edit)
+    }
+
+    /// Applies an update without waiting past an optional command deadline.
+    ///
+    /// # Errors
+    /// Those of [`Self::update`]; `request_timeout` when the command expires.
+    pub fn update_with_deadline(
+        &self,
+        wait: Duration,
+        command_deadline: Option<Instant>,
+        edit: &dyn Fn(&mut DocumentMut) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let lock_path = self.dir.join("locks").join("config.lock");
-        let _lock = files::lock(&lock_path, wait).map_err(|error| io_error(&lock_path, &error))?;
-        let text = self.read()?;
-        let mut doc = text
-            .parse::<DocumentMut>()
-            .map_err(|error| syntax_error(&text, error.message(), error.span()))?;
+        let _lock = deadline::operation(command_deadline, || {
+            let budget = clipped_wait(wait, command_deadline, Instant::now());
+            files::lock(&lock_path, budget.duration).map_err(|error| {
+                if error.kind() == io::ErrorKind::TimedOut && budget.limit == Limit::Command {
+                    deadline::timeout()
+                } else {
+                    io_error(&lock_path, &error)
+                }
+            })
+        })?;
+        let mut doc = deadline::operation(command_deadline, || {
+            let text = self.read()?;
+            let doc = text
+                .parse::<DocumentMut>()
+                .map_err(|error| syntax_error(&text, error.message(), error.span()))?;
+            document::check_server_names(&doc)?;
+            Ok(doc)
+        })?;
         edit(&mut doc)?;
         let text = doc.to_string();
         if text.len() as u64 > MAX_CONFIG_BYTES {
@@ -119,6 +148,7 @@ impl ConfigFile {
             ));
         }
         parse(&text)?;
+        deadline::check(command_deadline)?;
         let path = self.path();
         files::write_atomic(&path, text.as_bytes()).map_err(|error| io_error(&path, &error))
     }

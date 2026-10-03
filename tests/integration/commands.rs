@@ -419,3 +419,64 @@ fn non_utf8_arguments_do_not_hide_the_format_flag() {
     assert_eq!(mcpjump::run(args, &deps, &mut out, &mut err), 2);
     assert!(String::from_utf8(err).unwrap().starts_with("error: "));
 }
+
+#[test]
+fn add_and_add_json_reject_ascii_aliases_without_store_or_config_changes() {
+    use crate::store_contract::key;
+    use mcpjump::store::{CredentialStore, RecordKind};
+
+    for (existing, added) in [("Demo", "demo"), ("demo", "Demo")] {
+        for command in ["add", "add-json"] {
+            let h = Harness::new();
+            let original =
+                format!("[servers.{existing}]\nurl = \"{URL}\"\ncredentials = \"keyring\"\n");
+            h.write_config(&original);
+            let account = key(existing, RecordKind::Tokens);
+            h.stores
+                .keyring()
+                .set(&account, br#"{"sentinel":"kept credentials"}"#)
+                .unwrap();
+            let value = if command == "add" {
+                URL
+            } else {
+                r#"{"type":"http","url":"https://example.com/mcp"}"#
+            };
+            let outcome = h.run(&[command, added, value]);
+            assert_eq!(
+                (outcome.code, outcome.error_kind().as_str()),
+                (2, "server_exists")
+            );
+            assert_eq!(h.config_text(), original);
+            assert_eq!(h.stores.opened(), 0);
+            assert_eq!(
+                h.stores.keyring().get(&account).unwrap().unwrap(),
+                br#"{"sentinel":"kept credentials"}"#
+            );
+        }
+    }
+}
+
+#[test]
+fn a_case_colliding_startup_config_exits_five_without_credential_access() {
+    let h = Harness::new();
+    let original = "[servers.Demo]\nurl = \"https://example.com/mcp\"\n\
+                    [servers.demo]\nurl = \"https://example.com/mcp\"\n";
+    h.write_config(original);
+    for args in [
+        &["list"][..],
+        &["tools", "demo"],
+        &["run", "Demo", "t"],
+        &["remove", "Demo"],
+        &["login", "demo"],
+    ] {
+        let outcome = h.run(args);
+        assert_eq!(
+            (outcome.code, outcome.error_kind().as_str()),
+            (5, "config_invalid")
+        );
+        assert_eq!(h.config_text(), original);
+        assert_eq!(h.stores.opened(), 0);
+        assert_eq!(h.connector.connects(), 0);
+        assert_eq!(h.browser.opens(), 0);
+    }
+}

@@ -1,6 +1,7 @@
 //! Locating, loading, validating and updating the config file.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -553,4 +554,183 @@ fn an_update_never_writes_a_file_too_large_to_load() {
         .unwrap();
     assert_eq!(dir.text().len(), limit);
     assert_eq!(dir.file.load().unwrap(), Config::default());
+}
+
+#[test]
+fn pre_push_red_case_colliding_insertion_fails_without_changing_config() {
+    for (existing, added) in [("Demo", "demo"), ("demo", "Demo")] {
+        let dir = Dir::new();
+        let original = format!("[servers.{existing}]\nurl = \"https://e.com\"\n");
+        dir.write(&original);
+        let error = dir
+            .file
+            .update(WAIT, &|doc| insert_server(doc, &name(added), &spec()))
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ServerExists);
+        assert_eq!(dir.text(), original);
+    }
+}
+
+#[test]
+fn existing_ascii_case_collisions_fail_loading_with_both_spellings() {
+    for (first, second) in [("Demo", "demo"), ("demo", "Demo")] {
+        let dir = Dir::new();
+        let original = format!(
+            "[servers.{first}]\nurl = \"https://e.com\"\n\
+             [servers.{second}]\nurl = \"https://e.com\"\n"
+        );
+        dir.write(&original);
+        assert_eq!(
+            dir.file.load().unwrap_err().kind(),
+            ErrorKind::ConfigInvalid
+        );
+        assert_eq!(dir.text(), original);
+    }
+}
+
+#[test]
+fn a_fresh_document_collision_rejects_before_the_update_closure() {
+    use crate::store_contract::key;
+    use crate::support::fakes::store::MemoryStore;
+    use mcpjump::store::{CredentialStore, RecordKind};
+    use std::cell::Cell;
+
+    let dir = Dir::new();
+    dir.write("[servers.Demo]\nurl = \"https://e.com\"\n");
+    dir.file.load().unwrap();
+    let original = "[servers.Demo]\nurl = \"https://e.com\"\n\
+                    [servers.demo]\nurl = \"https://e.com\"\n";
+    dir.write(original);
+    let store = MemoryStore::default();
+    let credential = key("Demo", RecordKind::Tokens);
+    store
+        .set(&credential, br#"{"sentinel":"old credentials"}"#)
+        .unwrap();
+    let called = Cell::new(false);
+    let error = dir
+        .file
+        .update(WAIT, &|_| {
+            called.set(true);
+            store.delete(&credential)
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ConfigInvalid);
+    assert!(!called.get());
+    assert_eq!(
+        store.get(&credential).unwrap().unwrap(),
+        br#"{"sentinel":"old credentials"}"#
+    );
+    assert_eq!(dir.text(), original);
+}
+
+#[test]
+fn ascii_distinct_names_and_the_exact_server_limit_still_load() {
+    let dir = Dir::new();
+    let mut servers = String::new();
+    for index in 0..MAX_SERVERS {
+        writeln!(servers, "[servers.S{index}]\nurl = \"https://e.com\"").unwrap();
+    }
+    dir.write(&servers);
+    assert_eq!(dir.file.load().unwrap().servers.len(), MAX_SERVERS);
+    let longest = format!("A{}", "z".repeat(63));
+    let other = format!("B{}", "z".repeat(63));
+    dir.write(&format!(
+        "[servers.{longest}]\nurl = \"https://e.com\"\n\
+         [servers.{other}]\nurl = \"https://e.com\"\n"
+    ));
+    assert_eq!(dir.file.load().unwrap().servers.len(), 2);
+}
+
+#[test]
+fn fresh_too_many_servers_reject_before_the_update_closure() {
+    let dir = Dir::new();
+    let mut original = String::new();
+    for index in 0..=MAX_SERVERS {
+        writeln!(original, "[servers.s{index}]\nurl = \"https://e.com\"").unwrap();
+    }
+    dir.write(&original);
+    let called = std::cell::Cell::new(false);
+    let error = dir
+        .file
+        .update(WAIT, &|_| {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::ConfigTooLarge);
+    assert!(!called.get());
+    assert_eq!(dir.text(), original);
+}
+
+#[test]
+fn an_oversized_name_can_be_removed_by_a_direct_config_repair() {
+    let dir = Dir::new();
+    let oversized = "s".repeat(65);
+    dir.write(&format!("[servers.{oversized}]\nurl = \"https://e.com\"\n"));
+    assert_eq!(
+        dir.file.load().unwrap_err().kind(),
+        ErrorKind::ConfigInvalid
+    );
+    dir.file
+        .update(WAIT, &|doc| {
+            assert!(
+                doc["servers"]
+                    .as_table_mut()
+                    .unwrap()
+                    .remove(&oversized)
+                    .is_some()
+            );
+            insert_server(doc, &name("valid"), &spec())
+        })
+        .unwrap();
+    let config = dir.file.load().unwrap();
+    assert_eq!(config.servers.len(), 1);
+    assert!(config.servers.contains_key(&name("valid")));
+}
+
+#[test]
+fn an_expired_config_update_has_no_lock_or_edit_side_effects() {
+    let dir = Dir::new();
+    let original = "[servers.demo]\nurl = \"https://e.com\"\n";
+    dir.write(original);
+    let called = std::cell::Cell::new(false);
+    let expired = tokio::time::Instant::now() - Duration::from_secs(1);
+    let error = dir
+        .file
+        .update_with_deadline(WAIT, Some(expired), &|_| {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::RequestTimeout);
+    assert!(!called.get());
+    assert_eq!(dir.text(), original);
+    assert!(!dir.file.dir().join("locks").exists());
+}
+
+#[test]
+fn a_config_edit_that_consumes_its_budget_leaves_original_bytes() {
+    let dir = Dir::new();
+    let original = "[servers.demo]\nurl = \"https://e.com\"\n";
+    dir.write(original);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let called = std::cell::Cell::new(false);
+    let started = std::time::Instant::now();
+    let result = dir.file.update_with_deadline(WAIT, Some(deadline), &|doc| {
+        called.set(true);
+        insert_server(doc, &name("new"), &spec())?;
+        // The edit has started; consume its fixed budget before returning.
+        // This timer tests expiration rather than ordering concurrent work.
+        while tokio::time::Instant::now() < deadline {
+            std::thread::park_timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+            );
+        }
+        Ok(())
+    });
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::RequestTimeout);
+    assert!(called.get());
+    assert_eq!(dir.text(), original);
+    assert_eq!(dir.file.load().unwrap().servers.len(), 1);
 }

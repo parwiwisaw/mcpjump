@@ -34,8 +34,14 @@ impl FakeSession {
                 definition: definition.clone(),
             })
             .collect();
+        let received_count = u64::try_from(definitions.len()).unwrap_or(u64::MAX);
+        let received_bytes = definitions.iter().fold(0_u64, |bytes, definition| {
+            bytes.saturating_add(u64::try_from(definition.to_string().len()).unwrap_or(u64::MAX))
+        });
         self.pages.push_back(Ok(ToolPage {
             tools,
+            received_count,
+            received_bytes,
             next_cursor: next_cursor.map(str::to_owned),
         }));
         self

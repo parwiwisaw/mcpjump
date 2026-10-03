@@ -1,4 +1,4 @@
-//! The per-server credential lock. It is held for every credential change,
+//! The per-server credential lock. It is held for complete reads and every change,
 //! so a logout or remove cannot race a refresh that would bring deleted
 //! tokens back. Lock order is always `config.lock`, then this one.
 
@@ -6,9 +6,12 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use crate::config::validate::ServerName;
 use crate::error::{Error, ErrorKind};
 use crate::files::{self, FileLock};
+use crate::sys::deadline::{self, Limit, clipped_wait};
 
 /// Runs `work` under the server lock. A keyring call abandoned on timeout
 /// may still write, so after `keyring_timeout` the lock is kept until the
@@ -16,14 +19,15 @@ use crate::files::{self, FileLock};
 ///
 /// # Errors
 /// Those of [`server_lock`], then whatever `work` returns.
-pub fn with_server_lock(
+pub fn with_server_lock<T>(
     config_dir: &Path,
     server: &ServerName,
     wait: Duration,
-    work: &dyn Fn() -> Result<(), Error>,
-) -> Result<(), Error> {
-    let lock = server_lock(config_dir, server, wait)?;
-    let result = work();
+    command_deadline: Option<Instant>,
+    work: &dyn Fn() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let lock = server_lock(config_dir, server, wait, command_deadline)?;
+    let result = deadline::operation(command_deadline, work);
     release(lock, &result);
     result
 }
@@ -32,10 +36,9 @@ pub fn with_server_lock(
 /// abandoned on timeout may still write, so after `keyring_timeout` the
 /// lock is kept until the process exits.
 pub fn release<T>(lock: FileLock, result: &Result<T, Error>) {
-    if result
-        .as_ref()
-        .is_err_and(|error| error.kind() == ErrorKind::KeyringTimeout)
-    {
+    if result.as_ref().is_err_and(|error| {
+        error.kind() == ErrorKind::KeyringTimeout || error.retains_credential_lock()
+    }) {
         std::mem::forget(lock);
     }
 }
@@ -44,31 +47,38 @@ pub fn release<T>(lock: FileLock, result: &Result<T, Error>) {
 /// The subdirectory keeps a server named `config` off the config lock.
 ///
 /// # Errors
-/// `credential_lock_timeout` if another process holds it for longer, or
+/// `request_timeout` if the command budget expires, `credential_lock_timeout`
+/// if another process holds it for longer than the independent wait, or
 /// `credential_store` if the lock file cannot be created or locked.
 pub fn server_lock(
     config_dir: &Path,
     server: &ServerName,
     wait: Duration,
+    command_deadline: Option<Instant>,
 ) -> Result<FileLock, Error> {
     let path = config_dir
         .join("locks")
         .join("servers")
         .join(format!("{}.lock", server.as_str()));
-    files::lock(&path, wait).map_err(|error| {
-        if error.kind() == io::ErrorKind::TimedOut {
-            Error::new(
-                ErrorKind::CredentialLockTimeout,
-                format!(
-                    "another mcpjump process is changing the credentials for {:?}; try again",
-                    server.as_str()
-                ),
-            )
-        } else {
-            Error::new(
-                ErrorKind::CredentialStore,
-                format!("{}: {error}", path.display()),
-            )
-        }
+    deadline::operation(command_deadline, || {
+        let budget = clipped_wait(wait, command_deadline, Instant::now());
+        files::lock(&path, budget.duration).map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut && budget.limit == Limit::Command {
+                deadline::timeout()
+            } else if error.kind() == io::ErrorKind::TimedOut {
+                Error::new(
+                    ErrorKind::CredentialLockTimeout,
+                    format!(
+                        "another mcpjump process is changing the credentials for {:?}; try again",
+                        server.as_str()
+                    ),
+                )
+            } else {
+                Error::new(
+                    ErrorKind::CredentialStore,
+                    format!("{}: {error}", path.display()),
+                )
+            }
+        })
     })
 }

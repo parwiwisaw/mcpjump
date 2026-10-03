@@ -15,6 +15,7 @@ pub(crate) fn run(name: &str, context: &Context, deps: &Deps<'_>) -> Result<Valu
         name: &name,
         context,
         stores: deps.stores,
+        deadline: None,
     };
     let had_credentials = vault.forget_tokens()?;
     Ok(json!({ "server": name.as_str(), "logged_out": had_credentials }))

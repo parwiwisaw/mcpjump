@@ -11,6 +11,7 @@ use crate::config::validate::ServerName;
 use crate::error::Error;
 use crate::mcp::connector::Target;
 use crate::mcp::session::McpSession;
+use crate::sys::deadline;
 
 /// An open session and the warnings collected while opening it.
 #[derive(Debug)]
@@ -35,8 +36,14 @@ pub(crate) async fn connect(
     target
         .headers
         .extend(bearer.map(|token| ("Authorization".to_owned(), format!("Bearer {token}"))));
-    let connection = deps.connector.connect(target).await?;
-    let warnings = remember(context, name, entry.generation, connection.generation);
+    let connection = deadline::dispatch(Some(deadline), || deps.connector.connect(target)).await?;
+    let warnings = remember(
+        context,
+        name,
+        entry.generation,
+        connection.generation,
+        deadline,
+    );
     Ok(Session {
         session: connection.session,
         warnings,
@@ -76,6 +83,7 @@ fn remember(
     name: &ServerName,
     saved: Option<Generation>,
     found: Generation,
+    deadline: Instant,
 ) -> Vec<String> {
     if saved == Some(found) {
         return Vec::new();
@@ -83,7 +91,9 @@ fn remember(
     let lock_wait = context.config.limits.lock_wait();
     context
         .file
-        .update(lock_wait, &|doc| document::set_generation(doc, name, found))
+        .update_with_deadline(lock_wait, Some(deadline), &|doc| {
+            document::set_generation(doc, name, found)
+        })
         .err()
         .map(|error| {
             format!(

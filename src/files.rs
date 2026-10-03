@@ -105,7 +105,9 @@ pub fn lock_with(
                     format!("lock still held after {} s", wait.as_secs()),
                 ));
             }
-            Err(TryLockError::WouldBlock) => thread::sleep(LOCK_POLL),
+            Err(TryLockError::WouldBlock) => {
+                thread::sleep(LOCK_POLL.min(deadline.saturating_duration_since(Instant::now())));
+            }
         }
     }
 }

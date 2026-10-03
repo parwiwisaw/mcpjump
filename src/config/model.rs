@@ -274,6 +274,7 @@ impl RawConfig {
         if self.servers.len() > MAX_SERVERS {
             return Err(too_many_servers());
         }
+        check_server_name_uniqueness(self.servers.keys().map(String::as_str))?;
         self.limits.validate()?;
         let settings = self.settings.validate()?;
         let mut servers = BTreeMap::new();
@@ -289,6 +290,32 @@ impl RawConfig {
             servers,
         })
     }
+}
+
+/// Checks only bounded name uniqueness, so an update can still repair
+/// unrelated invalid fields. Oversized names are rejected by normal validation.
+pub(crate) fn check_server_name_uniqueness<'a>(
+    names: impl Iterator<Item = &'a str>,
+) -> Result<(), Error> {
+    let mut folded = BTreeMap::new();
+    for (index, name) in names.enumerate() {
+        if index >= MAX_SERVERS {
+            return Err(too_many_servers());
+        }
+        if name.len() > validate::MAX_NAME_LEN {
+            continue;
+        }
+        if let Some(previous) = folded.insert(name.to_ascii_lowercase(), name) {
+            return Err(Error::new(
+                ErrorKind::ConfigInvalid,
+                format!(
+                    "server names {previous:?} and {name:?} differ only in ASCII case; \
+                     choose distinct names in config.toml before using their credentials"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The error for a config that would hold more than [`MAX_SERVERS`] servers.

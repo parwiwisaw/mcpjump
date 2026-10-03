@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
+use tokio::time::Instant;
+
 use mcpjump::config::limits::Limits;
 use mcpjump::error::{Error, ErrorKind};
 use mcpjump::store::file::FileStore;
@@ -116,7 +118,7 @@ impl FakeOpener {
 }
 
 impl StoreOpener for FakeOpener {
-    fn keyring(&self, _limits: &Limits) -> Result<KeyringStart, Error> {
+    fn keyring(&self, _limits: &Limits, _deadline: Option<Instant>) -> Result<KeyringStart, Error> {
         self.opened.set(self.opened.get() + 1);
         match self.mode.get() {
             KeyringMode::Ready => Ok(KeyringStart::Ready(Box::new(self.keyring.clone()))),

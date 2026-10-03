@@ -53,9 +53,10 @@ fn delete_credentials(
         config_dir,
         config_file: &config_file,
         limits,
+        deadline: None,
     };
-    lock::with_server_lock(config_dir, name, limits.lock_wait(), &|| {
-        let selected = select::select(deps.stores, &request)?;
+    let selected = select::select(deps.stores, &request)?;
+    lock::with_server_lock(config_dir, name, limits.lock_wait(), None, &|| {
         RecordKind::ALL
             .into_iter()
             .try_for_each(|kind| selected.store.delete(&Key::new(name.clone(), kind)))

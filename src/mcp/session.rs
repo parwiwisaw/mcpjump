@@ -24,8 +24,12 @@ pub struct Tool {
 /// One page of `tools/list`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolPage {
-    /// The tools on this page.
+    /// The tools retained after transport-specific filtering.
     pub tools: Vec<Tool>,
+    /// All definitions received on this page, before filtering.
+    pub received_count: u64,
+    /// Serialized raw definition bytes, excluding the response envelope.
+    pub received_bytes: u64,
     /// The cursor for the next page, if there is one.
     pub next_cursor: Option<String>,
 }

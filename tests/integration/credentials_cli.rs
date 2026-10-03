@@ -130,7 +130,7 @@ fn remove_waits_for_a_login_holding_the_server_lock_then_gives_up() {
          [servers.kr]\nurl = \"{URL}\"\ncredentials = \"keyring\"\n"
     ));
     let name = ServerName::parse("kr").unwrap();
-    let held = server_lock(h.home.path(), &name, Duration::ZERO).unwrap();
+    let held = server_lock(h.home.path(), &name, Duration::ZERO, None).unwrap();
     let before = h.config_text();
     let outcome = h.run(&["remove", "kr"]);
     assert_eq!(outcome.error_kind(), "credential_lock_timeout");

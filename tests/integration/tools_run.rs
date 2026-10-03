@@ -346,3 +346,17 @@ fn run_keeps_listing_warnings_and_rejects_unknown_tools() {
     let (h, _log) = harness(FakeSession::default().page(&[], None));
     assert_eq!(h.run(&["run", "demo", "t"]).error_kind(), "unknown_tool");
 }
+
+#[test]
+fn an_oversized_page_containing_the_wanted_tool_never_calls_it() {
+    let definitions: Vec<Value> = (0..4)
+        .map(|index| tool(&format!("t{index}"), &json!({})))
+        .collect();
+    let session = FakeSession::default().page(&definitions, Some("unused"));
+    let (h, log) = harness(session);
+    h.write_config("[limits]\nmax_tools = 3\n[servers.demo]\nurl = \"https://example.com/mcp\"\n");
+    let outcome = h.run(&["run", "demo", "t0"]);
+    assert_eq!(outcome.code, 4);
+    assert_eq!(outcome.error_kind(), "tool_list_limit");
+    assert_eq!(entries(&log), ["list ", "close"]);
+}

@@ -17,6 +17,7 @@ use crate::config::validate::ServerName;
 use crate::error::{Error, ErrorKind};
 use crate::mcp::session::{McpSession, ToolResult};
 use crate::mcp::validate::{check_params, validate};
+use crate::sys::deadline;
 use crate::sys::terminal::{Terminal, params_too_large};
 
 /// The schema for a tool that declares none: any object.
@@ -38,6 +39,7 @@ pub(crate) async fn run(args: RunArgs, context: &Context, deps: &Deps<'_>) -> Re
         deps,
         name: &name,
         entry,
+        deadline,
     };
     let tool = args.tool.as_str();
     authorized(auth, &|bearer| {
@@ -84,6 +86,7 @@ async fn attempt(
         planned.name,
         planned.tool,
         planned.arguments,
+        planned.deadline,
     )
     .await;
     opened.session.close().await;
@@ -102,8 +105,12 @@ async fn call(
     server: &ServerName,
     tool: &str,
     arguments: Map<String, Value>,
+    command_deadline: Instant,
 ) -> Result<(ToolResult, Vec<String>), Error> {
-    let (found, warnings) = find(session, limits, server, tool).await?;
+    let (found, warnings) = deadline::dispatch(Some(command_deadline), || {
+        find(session, limits, server, tool)
+    })
+    .await?;
     let schema = found.definition.get("inputSchema").unwrap_or(&ANY_INPUT);
     let timeout = Duration::from_secs(limits.validation_timeout_secs);
     validate(
@@ -112,7 +119,10 @@ async fn call(
         limits.max_json_depth,
         timeout,
     )?;
-    let result = session.call_tool(tool, arguments).await?;
+    let result = deadline::dispatch(Some(command_deadline), || {
+        session.call_tool(tool, arguments)
+    })
+    .await?;
     Ok((result, warnings))
 }
 

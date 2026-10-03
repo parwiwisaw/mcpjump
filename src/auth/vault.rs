@@ -4,6 +4,8 @@
 
 use std::cell::RefCell;
 
+use tokio::time::Instant;
+
 use crate::commands::Context;
 use crate::config::document;
 use crate::config::model::Backend;
@@ -12,6 +14,7 @@ use crate::error::Error;
 use crate::store::record::{self, Record};
 use crate::store::select::{self, Request, Selected, StoreOpener};
 use crate::store::{Key, RecordKind, lock};
+use crate::sys::deadline;
 
 /// The records of one server.
 #[derive(Debug, Clone, Copy)]
@@ -19,6 +22,7 @@ pub(crate) struct Vault<'a> {
     pub(crate) name: &'a ServerName,
     pub(crate) context: &'a Context,
     pub(crate) stores: &'a dyn StoreOpener,
+    pub(crate) deadline: Option<Instant>,
 }
 
 impl Vault<'_> {
@@ -57,11 +61,28 @@ impl Vault<'_> {
         store: &dyn crate::store::CredentialStore,
         kind: RecordKind,
     ) -> Result<Option<R>, Error> {
+        lock::with_server_lock(
+            self.context.file.dir(),
+            self.name,
+            self.context.config.limits.lock_wait(),
+            self.deadline,
+            &|| self.read_unlocked(store, kind),
+        )
+    }
+
+    /// Reads a record only while the caller already owns the server lock.
+    pub(crate) fn read_unlocked<R: Record>(
+        &self,
+        store: &dyn crate::store::CredentialStore,
+        kind: RecordKind,
+    ) -> Result<Option<R>, Error> {
         let key = self.key(kind);
-        store
-            .get(&key)?
-            .map(|bytes| record::decode(&key, &bytes))
-            .transpose()
+        deadline::operation(self.deadline, || {
+            store
+                .get(&key)?
+                .map(|bytes| record::decode(&key, &bytes))
+                .transpose()
+        })
     }
 
     /// Stores `record` as `kind` and records the backend. Returns the
@@ -77,19 +98,22 @@ impl Vault<'_> {
         let bytes = record::encode(record);
         let saved = RefCell::new(None);
         let limits = &self.context.config.limits;
-        self.context.file.update(limits.lock_wait(), &|doc| {
-            let selected =
-                document::credentials(doc, self.name).and_then(|recorded| self.select(recorded))?;
-            lock::with_server_lock(
-                self.context.file.dir(),
-                self.name,
-                limits.lock_wait(),
-                &|| selected.store.set(&self.key(kind), &bytes),
-            )
-            .and_then(|()| document::set_credentials(doc, self.name, selected.backend))?;
-            saved.replace(Some((selected.backend, selected.warning)));
-            Ok(())
-        })?;
+        self.context
+            .file
+            .update_with_deadline(limits.lock_wait(), self.deadline, &|doc| {
+                let selected = document::credentials(doc, self.name)
+                    .and_then(|recorded| self.select(recorded))?;
+                lock::with_server_lock(
+                    self.context.file.dir(),
+                    self.name,
+                    limits.lock_wait(),
+                    self.deadline,
+                    &|| selected.store.set(&self.key(kind), &bytes),
+                )
+                .and_then(|()| document::set_credentials(doc, self.name, selected.backend))?;
+                saved.replace(Some((selected.backend, selected.warning)));
+                Ok(())
+            })?;
         Ok(saved.into_inner().unwrap_or((Backend::File, None)))
     }
 
@@ -101,20 +125,23 @@ impl Vault<'_> {
     pub(crate) fn forget_tokens(&self) -> Result<bool, Error> {
         let found = RefCell::new(false);
         let limits = &self.context.config.limits;
-        self.context.file.update(limits.lock_wait(), &|doc| {
-            let Some(backend) = document::credentials(doc, self.name)? else {
-                return Ok(());
-            };
-            let selected = self.open(backend)?;
-            lock::with_server_lock(
-                self.context.file.dir(),
-                self.name,
-                limits.lock_wait(),
-                &|| selected.store.delete(&self.key(RecordKind::Tokens)),
-            )?;
-            found.replace(true);
-            Ok(())
-        })?;
+        self.context
+            .file
+            .update_with_deadline(limits.lock_wait(), self.deadline, &|doc| {
+                let Some(backend) = document::credentials(doc, self.name)? else {
+                    return Ok(());
+                };
+                let selected = self.open(backend)?;
+                lock::with_server_lock(
+                    self.context.file.dir(),
+                    self.name,
+                    limits.lock_wait(),
+                    self.deadline,
+                    &|| selected.store.delete(&self.key(RecordKind::Tokens)),
+                )?;
+                found.replace(true);
+                Ok(())
+            })?;
         Ok(found.into_inner())
     }
 
@@ -133,6 +160,7 @@ impl Vault<'_> {
                 config_dir: self.context.file.dir(),
                 config_file: &config_file,
                 limits: &self.context.config.limits,
+                deadline: self.deadline,
             },
         )
     }

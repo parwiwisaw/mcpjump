@@ -179,12 +179,12 @@ mod unix {
 fn a_held_server_lock_times_out() {
     let dir = tempfile::tempdir().unwrap();
     let name = mcpjump::config::validate::ServerName::parse("demo").unwrap();
-    let held = server_lock(dir.path(), &name, Duration::ZERO).unwrap();
-    let error = server_lock(dir.path(), &name, Duration::ZERO).unwrap_err();
+    let held = server_lock(dir.path(), &name, Duration::ZERO, None).unwrap();
+    let error = server_lock(dir.path(), &name, Duration::ZERO, None).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::CredentialLockTimeout);
     assert!(dir.path().join("locks/servers/demo.lock").is_file());
     drop(held);
-    server_lock(dir.path(), &name, Duration::ZERO).unwrap();
+    server_lock(dir.path(), &name, Duration::ZERO, None).unwrap();
 }
 
 #[test]
@@ -192,17 +192,17 @@ fn a_keyring_timeout_keeps_the_server_lock_until_exit() {
     let dir = tempfile::tempdir().unwrap();
     let name = mcpjump::config::validate::ServerName::parse("demo").unwrap();
     let wait = Duration::ZERO;
-    with_server_lock(dir.path(), &name, wait, &|| Ok(())).unwrap();
-    let failed = with_server_lock(dir.path(), &name, wait, &|| {
+    with_server_lock(dir.path(), &name, wait, None, &|| Ok(())).unwrap();
+    let failed: Result<(), Error> = with_server_lock(dir.path(), &name, wait, None, &|| {
         Err(Error::new(ErrorKind::CredentialStore, "refused"))
     });
     assert_eq!(failed.unwrap_err().kind(), ErrorKind::CredentialStore);
-    server_lock(dir.path(), &name, wait).unwrap();
-    let timed_out = with_server_lock(dir.path(), &name, wait, &|| {
+    server_lock(dir.path(), &name, wait, None).unwrap();
+    let timed_out: Result<(), Error> = with_server_lock(dir.path(), &name, wait, None, &|| {
         Err(Error::new(ErrorKind::KeyringTimeout, "no answer"))
     });
     assert_eq!(timed_out.unwrap_err().kind(), ErrorKind::KeyringTimeout);
-    let held = server_lock(dir.path(), &name, wait).unwrap_err();
+    let held = server_lock(dir.path(), &name, wait, None).unwrap_err();
     assert_eq!(held.kind(), ErrorKind::CredentialLockTimeout);
 }
 
@@ -211,6 +211,6 @@ fn an_unusable_lock_directory_is_a_store_error() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("locks"), "").unwrap();
     let name = mcpjump::config::validate::ServerName::parse("demo").unwrap();
-    let error = server_lock(dir.path(), &name, Duration::ZERO).unwrap_err();
+    let error = server_lock(dir.path(), &name, Duration::ZERO, None).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::CredentialStore);
 }

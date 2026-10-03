@@ -6,6 +6,7 @@
 
 use futures::TryFutureExt;
 use futures::future::{self, LocalBoxFuture};
+use tokio::time::Instant;
 
 use crate::app::Deps;
 use crate::auth::challenge::Challenge;
@@ -21,6 +22,7 @@ use crate::store::record::{
     self, MAX_PENDING_SCOPE_BYTES, RegistrationRecord, TokenRecord, is_scope,
 };
 use crate::store::{CredentialStore, RecordKind, lock};
+use crate::sys::deadline;
 
 /// A token that expires within this many seconds is refreshed first.
 pub(crate) const EXPIRY_WINDOW_SECS: u64 = 60;
@@ -35,6 +37,7 @@ pub(crate) struct Authorizer<'a> {
     pub(crate) deps: &'a Deps<'a>,
     pub(crate) name: &'a ServerName,
     pub(crate) entry: &'a ServerEntry,
+    pub(crate) deadline: Instant,
 }
 
 /// Whether the server is configured with its own `Authorization` header,
@@ -82,7 +85,8 @@ pub(crate) async fn authorized<'a, T>(
                 .map_err(|error| hint(error, auth.name))
         }
         Some(challenge) if challenge.insufficient_scope() => {
-            remember_scope(auth, &*store, &challenge)?;
+            remember_scope(auth, &*store, &tokens, &challenge)
+                .map_err(|error| hint(error, auth.name))?;
             first.map_err(|error| hint(error, auth.name))
         }
         _ => first,
@@ -95,7 +99,27 @@ impl Authorizer<'_> {
             name: self.name,
             context: self.context,
             stores: self.deps.stores,
+            deadline: Some(self.deadline),
         }
+    }
+}
+
+/// A concurrent rotation may change tokens, but not the authorized identity.
+fn check_current(
+    current: &TokenRecord,
+    stale: &TokenRecord,
+    auth: Authorizer<'_>,
+) -> Result<(), Error> {
+    check_binding(current, &auth.entry.spec, auth.name)?;
+    if current.resource == stale.resource
+        && current.client_id == stale.client_id
+        && current.issuer == stale.issuer
+    {
+        Ok(())
+    } else {
+        Err(expired(
+            "the login identity changed while the command was running",
+        ))
     }
 }
 
@@ -130,7 +154,12 @@ async fn renew(
     stale: &TokenRecord,
 ) -> Result<TokenRecord, Error> {
     let wait = auth.context.config.limits.lock_wait();
-    let lock = lock::server_lock(auth.context.file.dir(), auth.name, wait)?;
+    let lock = lock::server_lock(
+        auth.context.file.dir(),
+        auth.name,
+        wait,
+        Some(auth.deadline),
+    )?;
     let renewed = renew_locked(auth, store, stale).await;
     lock::release(lock, &renewed);
     renewed.map_err(|error| hint(error, auth.name))
@@ -143,8 +172,9 @@ async fn renew_locked(
 ) -> Result<TokenRecord, Error> {
     let vault = auth.vault();
     let current = vault
-        .read::<TokenRecord>(store, RecordKind::Tokens)?
+        .read_unlocked::<TokenRecord>(store, RecordKind::Tokens)?
         .ok_or_else(|| expired("the login was removed"))?;
+    check_current(&current, stale, auth)?;
     if current.access_token != stale.access_token {
         return Ok(current);
     }
@@ -153,7 +183,7 @@ async fn renew_locked(
         .as_deref()
         .ok_or_else(|| expired("the token expired and cannot be refreshed"))?;
     let client = vault
-        .read::<RegistrationRecord>(store, RecordKind::Registration)?
+        .read_unlocked::<RegistrationRecord>(store, RecordKind::Registration)?
         .filter(|client| client.client_id == current.client_id && client.issuer == current.issuer)
         .ok_or_else(|| expired("the client the token was issued to is gone"))?;
     let binding = Binding {
@@ -164,11 +194,16 @@ async fn renew_locked(
     let grant = Grant::Refresh { refresh_token };
     let now = auth.deps.clock.now_unix();
     let previous = Some(&current);
-    let renewed = future::ready(AuthHttp::start(&auth.context.config.limits))
-        .and_then(|http| async move { redeem(&http, binding, grant, previous, &[], now).await })
-        .await?;
-    store.set(&vault.key(RecordKind::Tokens), &record::encode(&renewed))?;
-    Ok(renewed)
+    let renewed = future::ready(AuthHttp::start_with_deadline(
+        &auth.context.config.limits,
+        Some(auth.deadline),
+    ))
+    .and_then(|http| async move { redeem(&http, binding, grant, previous, &[], now).await })
+    .await?;
+    deadline::operation(Some(auth.deadline), || {
+        store.set(&vault.key(RecordKind::Tokens), &record::encode(&renewed))
+    })
+    .map(|()| renewed)
 }
 
 /// Saves the scope a 403 asked for, so the next login requests it. A
@@ -176,6 +211,7 @@ async fn renew_locked(
 fn remember_scope(
     auth: Authorizer<'_>,
     store: &dyn CredentialStore,
+    stale: &TokenRecord,
     challenge: &Challenge,
 ) -> Result<(), Error> {
     let Some(scope) = challenge.scope.as_deref() else {
@@ -183,25 +219,35 @@ fn remember_scope(
     };
     let vault = auth.vault();
     let wait = auth.context.config.limits.lock_wait();
-    lock::with_server_lock(auth.context.file.dir(), auth.name, wait, &|| {
-        let Some(mut tokens) = vault.read::<TokenRecord>(store, RecordKind::Tokens)? else {
-            return Ok(());
-        };
-        for added in scope.split(' ').filter(|scope| is_scope(scope)) {
-            let known = tokens
-                .scopes
-                .iter()
-                .chain(&tokens.pending_scopes)
-                .any(|s| s == added);
-            if !known {
-                tokens.pending_scopes.push(added.to_owned());
+    lock::with_server_lock(
+        auth.context.file.dir(),
+        auth.name,
+        wait,
+        Some(auth.deadline),
+        &|| {
+            let Some(mut tokens) = vault.read_unlocked::<TokenRecord>(store, RecordKind::Tokens)?
+            else {
+                return Ok(());
+            };
+            check_current(&tokens, stale, auth)?;
+            for added in scope.split(' ').filter(|scope| is_scope(scope)) {
+                let known = tokens
+                    .scopes
+                    .iter()
+                    .chain(&tokens.pending_scopes)
+                    .any(|s| s == added);
+                if !known {
+                    tokens.pending_scopes.push(added.to_owned());
+                }
             }
-        }
-        if tokens.pending_scopes.join(" ").len() > MAX_PENDING_SCOPE_BYTES {
-            return Ok(());
-        }
-        store.set(&vault.key(RecordKind::Tokens), &record::encode(&tokens))
-    })
+            if tokens.pending_scopes.join(" ").len() > MAX_PENDING_SCOPE_BYTES {
+                return Ok(());
+            }
+            deadline::operation(Some(auth.deadline), || {
+                store.set(&vault.key(RecordKind::Tokens), &record::encode(&tokens))
+            })
+        },
+    )
 }
 
 fn expired(reason: &str) -> Error {

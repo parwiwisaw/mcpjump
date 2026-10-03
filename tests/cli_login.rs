@@ -99,6 +99,9 @@ fn two_runs_racing_a_rotating_server_both_succeed() {
     });
     let home = home(&server);
     assert_eq!(login(&home).status.code(), Some(0));
+    // The initial grant is expiring; refreshed tokens must be fresh whichever
+    // process wins the now-locked initial read.
+    server.set_token_lifetime(3600);
     let runs: Vec<_> = (0..2)
         .map(|_| {
             Command::new(env!("CARGO_BIN_EXE_mcpjump"))

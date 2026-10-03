@@ -251,6 +251,16 @@ impl ClientSession {
 
     /// Decodes the list model and filters Modern's invalid header annotations.
     fn tool_page(&mut self, value: Value) -> Result<ToolPage, Error> {
+        let definitions = value["tools"].as_array().ok_or_else(|| {
+            protocol_error(
+                &self.endpoint.origin(),
+                "answered tools/list with another result",
+            )
+        })?;
+        let received_count = u64::try_from(definitions.len()).unwrap_or(u64::MAX);
+        let received_bytes = definitions.iter().fold(0_u64, |bytes, definition| {
+            bytes.saturating_add(u64::try_from(definition.to_string().len()).unwrap_or(u64::MAX))
+        });
         let list: ListToolsResult = serde_json::from_value(value).map_err(|_| {
             protocol_error(
                 &self.endpoint.origin(),
@@ -275,6 +285,8 @@ impl ClientSession {
         }
         Ok(ToolPage {
             tools,
+            received_count,
+            received_bytes,
             next_cursor: list.next_cursor,
         })
     }

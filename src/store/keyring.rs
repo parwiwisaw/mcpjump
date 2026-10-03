@@ -5,10 +5,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use crate::error::{Error, ErrorKind};
 use crate::store::chunk::{self, CHUNK_BYTES, Head, MAX_CHUNKS, Manifest, Slot};
 use crate::store::select::KeyringStart;
 use crate::store::{self, CredentialStore, Key, MAX_RECORD_BYTES, SERVICE};
+use crate::sys::deadline::{self, Limit, Wait, clipped_wait};
 use crate::sys::worker;
 
 /// A started `keyring-core` store.
@@ -26,6 +29,7 @@ pub struct KeyringStore {
     store: PlatformStore,
     max_entry_bytes: usize,
     timeout: Duration,
+    deadline: Option<Instant>,
 }
 
 /// Starts the keyring with `start` under `timeout`. A store that fails to
@@ -38,28 +42,41 @@ pub fn open(
     start: StartFn,
     max_entry_bytes: usize,
     timeout: Duration,
+    command_deadline: Option<Instant>,
 ) -> Result<KeyringStart, Error> {
-    match worker::run_within(Box::new(start), timeout) {
-        Some(Ok(store)) => Ok(KeyringStart::Ready(Box::new(KeyringStore::new(
-            store,
-            max_entry_bytes,
-            timeout,
-        )))),
-        Some(Err(error @ keyring_core::Error::NoStorageAccess(_))) => Err(keyring_error(&error)),
-        Some(Err(error)) => Ok(KeyringStart::Unavailable(error.to_string())),
-        None => Err(timeout_error(timeout)),
-    }
+    deadline::operation(command_deadline, || {
+        let budget = clipped_wait(timeout, command_deadline, Instant::now());
+        match worker::run_within(Box::new(start), budget.duration) {
+            Some(Ok(store)) => Ok(KeyringStart::Ready(Box::new(KeyringStore::new(
+                store,
+                max_entry_bytes,
+                timeout,
+                command_deadline,
+            )))),
+            Some(Err(error @ keyring_core::Error::NoStorageAccess(_))) => {
+                Err(keyring_error(&error))
+            }
+            Some(Err(error)) => Ok(KeyringStart::Unavailable(error.to_string())),
+            None => Err(wait_error(budget)),
+        }
+    })
 }
 
 impl KeyringStore {
     /// Records in `store`, at most `max_entry_bytes` per entry, each call
     /// bounded by `timeout`.
     #[must_use]
-    pub const fn new(store: PlatformStore, max_entry_bytes: usize, timeout: Duration) -> Self {
+    pub const fn new(
+        store: PlatformStore,
+        max_entry_bytes: usize,
+        timeout: Duration,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             store,
             max_entry_bytes,
             timeout,
+            deadline,
         }
     }
 
@@ -70,10 +87,13 @@ impl KeyringStore {
             account: key.account(),
             max_entry_bytes: self.max_entry_bytes,
         };
-        match worker::run_within(Box::new(move || op(&entries)), self.timeout) {
-            Some(result) => result.map_err(|failure| failure.into_error(key)),
-            None => Err(timeout_error(self.timeout)),
-        }
+        deadline::operation(self.deadline, || {
+            let budget = clipped_wait(self.timeout, self.deadline, Instant::now());
+            match worker::run_within(Box::new(move || op(&entries)), budget.duration) {
+                Some(result) => result.map_err(|failure| failure.into_error(key)),
+                None => Err(wait_error(budget).retaining_credential_lock()),
+            }
+        })
     }
 }
 
@@ -138,6 +158,13 @@ fn timeout_error(timeout: Duration) -> Error {
             timeout.as_secs()
         ),
     )
+}
+
+fn wait_error(wait: Wait) -> Error {
+    match wait.limit {
+        Limit::Operation => timeout_error(wait.duration),
+        Limit::Command => deadline::timeout(),
+    }
 }
 
 /// The entries of one account: the main entry and its chunks.

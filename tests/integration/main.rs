@@ -2,8 +2,10 @@
 //! is a test failure with its location.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod command_deadlines;
 mod commands;
 mod config;
+mod credential_reads;
 mod credentials_cli;
 mod env_contract;
 mod errors;
@@ -11,6 +13,7 @@ mod files;
 mod http_body;
 mod http_client;
 mod http_sse;
+mod keyring_retention;
 mod mcp_contract;
 mod mcp_inhouse;
 mod mcp_probe;
@@ -29,6 +32,7 @@ mod store_keyring;
 mod store_record;
 mod store_select;
 mod support;
+mod tool_limits;
 mod tool_scan;
 mod tools_run;
 mod url_policy;

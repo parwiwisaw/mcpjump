@@ -147,6 +147,7 @@ struct Inner {
     issued: u32,
     refresh_token: Option<String>,
     code_challenge: Option<String>,
+    token_gate: Option<TokenPause>,
 }
 
 type Shared = Arc<Mutex<Inner>>;
@@ -159,6 +160,33 @@ pub(crate) struct OAuthServer {
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     complete: mpsc::Receiver<()>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct TokenPause {
+    reached: mpsc::SyncSender<()>,
+    released: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// A one-shot token endpoint pause; dropping it releases any handler.
+#[derive(Debug)]
+pub(crate) struct TokenGate {
+    reached: mpsc::Receiver<()>,
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl TokenGate {
+    pub(crate) fn wait_reached(&self) {
+        self.reached.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+}
+
+impl Drop for TokenGate {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(());
+        }
+    }
 }
 
 impl OAuthServer {
@@ -183,6 +211,7 @@ impl OAuthServer {
                     issued: 0,
                     refresh_token: None,
                     code_challenge: None,
+                    token_gate: None,
                 }));
                 sender.send((base, Arc::clone(&inner))).unwrap();
                 tokio::select! {
@@ -202,6 +231,23 @@ impl OAuthServer {
         }
     }
 
+    /// Pause one token response after its request is recorded.
+    pub(crate) fn gate_tokens(&self) -> TokenGate {
+        let (reached, received) = mpsc::sync_channel(1);
+        let (release, released) = tokio::sync::oneshot::channel();
+        let previous = self
+            .inner
+            .lock()
+            .unwrap()
+            .token_gate
+            .replace(TokenPause { reached, released });
+        assert!(previous.is_none());
+        TokenGate {
+            reached: received,
+            release: Some(release),
+        }
+    }
+
     /// The MCP endpoint the server protects.
     pub(crate) fn mcp_url(&self) -> Url {
         self.base.join("mcp").unwrap()
@@ -212,6 +258,12 @@ impl OAuthServer {
         self.base
             .join(".well-known/oauth-protected-resource/mcp")
             .unwrap()
+    }
+
+    /// Change the lifetime of subsequent grants without changing already stored tokens.
+    pub(crate) fn set_token_lifetime(&self, seconds: u64) {
+        assert!((1..=3600).contains(&seconds));
+        self.inner.lock().unwrap().script.expires_in = Some(seconds);
     }
 
     /// Makes `token` the refresh token the server accepts.
@@ -434,8 +486,25 @@ async fn register(State(inner): State<Shared>, headers: HeaderMap, body: Bytes) 
 
 async fn token(State(inner): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
     let params = pairs(&String::from_utf8_lossy(&body));
+    let gate = {
+        let mut state = inner.lock().unwrap();
+        record(&mut state, "/token", params.clone(), &headers);
+        state.token_gate.take()
+    };
+    if let Some(gate) = gate {
+        let _ = gate.reached.try_send(());
+        if tokio::time::timeout(Duration::from_secs(5), gate.released)
+            .await
+            .is_err()
+        {
+            return StatusCode::GATEWAY_TIMEOUT.into_response();
+        }
+    }
     let mut inner = inner.lock().unwrap();
-    record(&mut inner, "/token", params.clone(), &headers);
+    token_answer(&mut inner, &params)
+}
+
+fn token_answer(inner: &mut Inner, params: &BTreeMap<String, String>) -> Response {
     let param = |name: &str| params.get(name).map(String::as_str);
     let valid = match param("grant_type") {
         Some("authorization_code") => {

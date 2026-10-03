@@ -504,3 +504,48 @@ async fn legacy_notification_and_response_posts_accept_empty_200_bodies() {
     connection.session.close().await;
     fixture.finished();
 }
+
+#[tokio::test]
+async fn pre_push_mcp_red_filtered_definitions_still_obey_received_count() {
+    let tools: Vec<Value> = (0..1001)
+        .map(|_| json!({"name":"","inputSchema":{"properties":{"":{"x-mcp-header":0}}}}))
+        .collect();
+    let mut steps = modern(false);
+    steps.push(reply(
+        "tools/list",
+        result(1, &json!({"tools":tools})),
+        false,
+    ));
+    let fixture = Fixture::new(steps).await;
+    let target = quick(&fixture, None);
+    let limits = target.limits.clone();
+    let mut connection = connect(target).await.unwrap();
+    let outcome = mcpjump::mcp::tools::scan(&mut *connection.session, &limits, None).await;
+    connection.session.close().await;
+    assert_eq!(outcome.unwrap_err().kind().as_str(), "tool_list_limit");
+    assert_eq!(labels(&fixture), ["server/discover", "tools/list"]);
+    fixture.finished();
+}
+
+#[tokio::test]
+async fn invalid_models_inside_a_tools_array_are_redacted_protocol_errors() {
+    for tools in [
+        json!([{"inputSchema": {}}]),
+        json!([{"name": "SECRET", "inputSchema": 1}]),
+    ] {
+        let mut steps = modern(false);
+        steps.push(reply(
+            "tools/list",
+            result(1, &json!({"tools": tools})),
+            false,
+        ));
+        let fixture = Fixture::new(steps).await;
+        let mut connection = connect(quick(&fixture, None)).await.unwrap();
+        let error = connection.session.list_tools_page(None).await.unwrap_err();
+        assert_eq!(error.kind().as_str(), "protocol_error");
+        assert!(!error.message().contains("SECRET"));
+        connection.session.close().await;
+        assert_eq!(labels(&fixture), ["server/discover", "tools/list"]);
+        fixture.finished();
+    }
+}

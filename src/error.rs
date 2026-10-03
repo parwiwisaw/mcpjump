@@ -247,6 +247,7 @@ pub struct Error {
     message: String,
     path: Option<String>,
     challenge: Option<Box<Challenge>>,
+    retain_credential_lock: bool,
 }
 
 impl Error {
@@ -257,6 +258,7 @@ impl Error {
             message: message.into(),
             path: None,
             challenge: None,
+            retain_credential_lock: false,
         }
     }
 
@@ -291,6 +293,17 @@ impl Error {
     #[must_use]
     pub const fn kind(&self) -> ErrorKind {
         self.kind
+    }
+
+    /// A started credential worker may still touch records after timeout.
+    pub(crate) fn retaining_credential_lock(mut self) -> Self {
+        self.retain_credential_lock = true;
+        self
+    }
+
+    /// Whether releasing a credential lock would race abandoned work.
+    pub(crate) const fn retains_credential_lock(&self) -> bool {
+        self.retain_credential_lock
     }
 
     /// The human-readable message.

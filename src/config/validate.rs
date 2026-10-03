@@ -15,7 +15,7 @@ pub const MAX_HEADERS: usize = 32;
 /// Longest header value, in bytes, before and after `${VAR}` expansion.
 pub const MAX_HEADER_VALUE_LEN: usize = 8 * 1024;
 /// Longest server name.
-const MAX_NAME_LEN: usize = 64;
+pub(crate) const MAX_NAME_LEN: usize = 64;
 /// Longest header name.
 const MAX_HEADER_NAME_LEN: usize = 256;
 /// Header names mcpjump sets itself or that would break the transport.

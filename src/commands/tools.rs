@@ -16,6 +16,7 @@ use crate::config::validate::ServerName;
 use crate::error::{Error, ErrorKind};
 use crate::mcp::session::{McpSession, Tool};
 use crate::mcp::tools::scan;
+use crate::sys::deadline;
 
 /// Protocol attempts one command may make: Modern, one version retry,
 /// Legacy Streamable, and SSE. Bounds the deadline of commands that do not
@@ -33,14 +34,24 @@ pub(crate) async fn run(
     let name = ServerName::parse(&args.name)?;
     let tool = args.tool.as_deref();
     let entry = context.config.server(&name)?;
+    let budget = Duration::from_secs(context.config.limits.request_timeout_secs) * MAX_ATTEMPTS;
+    let deadline = Instant::now() + budget;
     let auth = Authorizer {
         context,
         deps,
         name: &name,
         entry,
+        deadline,
     };
     authorized(auth, &|bearer| {
-        Box::pin(attempt(context, deps, (&name, entry), tool, bearer))
+        Box::pin(attempt(
+            context,
+            deps,
+            (&name, entry),
+            tool,
+            deadline,
+            bearer,
+        ))
     })
     .await
 }
@@ -50,13 +61,15 @@ async fn attempt(
     deps: &Deps<'_>,
     (name, entry): (&ServerName, &ServerEntry),
     tool: Option<&str>,
+    deadline: Instant,
     bearer: Option<String>,
 ) -> Result<Reply, Error> {
     let limits = &context.config.limits;
-    let budget = Duration::from_secs(limits.request_timeout_secs) * MAX_ATTEMPTS;
-    let deadline = Instant::now() + budget;
     let mut opened = connect(context, deps, (name, entry), deadline, bearer.as_deref()).await?;
-    let listed = list(opened.session.as_mut(), limits, name, tool).await;
+    let listed = match deadline::check(Some(deadline)) {
+        Ok(()) => list(opened.session.as_mut(), limits, name, tool).await,
+        Err(error) => Err(error),
+    };
     opened.session.close().await;
     let (value, warnings) = listed?;
     opened.warnings.extend(warnings);

@@ -15,6 +15,7 @@ use crate::error::{Error, ErrorKind};
 use crate::http::body::{SizeLimit, read_body};
 use crate::http::client::{HttpClient, Redirects};
 use crate::mcp::connector::USER_AGENT;
+use crate::sys::deadline::{self, Limit, clipped_wait};
 
 /// A status and its whole body.
 #[derive(Debug)]
@@ -55,6 +56,7 @@ pub(crate) struct AuthHttp {
     deadline: Instant,
     budget_secs: u64,
     max_bytes: u64,
+    limit: Limit,
 }
 
 impl AuthHttp {
@@ -64,12 +66,28 @@ impl AuthHttp {
     /// # Errors
     /// `network` if the HTTP client cannot start.
     pub(crate) fn start(limits: &Limits) -> Result<Self, Error> {
+        Self::start_with_deadline(limits, None)
+    }
+
+    /// Starts a phase bounded by both its own budget and the command.
+    pub(crate) fn start_with_deadline(
+        limits: &Limits,
+        command_deadline: Option<Instant>,
+    ) -> Result<Self, Error> {
+        deadline::check(command_deadline)?;
+        let now = Instant::now();
+        let budget = clipped_wait(
+            Duration::from_secs(limits.auth_network_budget_secs),
+            command_deadline,
+            now,
+        );
         HttpClient::new(Duration::from_secs(limits.connect_timeout_secs), USER_AGENT).map(
             |client| Self {
                 client,
-                deadline: Instant::now() + Duration::from_secs(limits.auth_network_budget_secs),
+                deadline: now + budget.duration,
                 budget_secs: limits.auth_network_budget_secs,
                 max_bytes: limits.max_metadata_bytes,
+                limit: budget.limit,
             },
         )
     }
@@ -94,6 +112,9 @@ impl AuthHttp {
     /// `auth_timeout` once the budget is spent; the client's and the body
     /// reader's other errors.
     pub(crate) async fn send(&self, request: RequestBuilder) -> Result<Answer, Error> {
+        if Instant::now() >= self.deadline {
+            return Err(self.budget(deadline::timeout()));
+        }
         let response = self
             .client
             .send(request, self.deadline)
@@ -112,7 +133,7 @@ impl AuthHttp {
     }
 
     fn budget(&self, error: Error) -> Error {
-        if error.kind() == ErrorKind::RequestTimeout {
+        if error.kind() == ErrorKind::RequestTimeout && self.limit == Limit::Operation {
             Error::new(
                 ErrorKind::AuthTimeout,
                 format!(
@@ -128,6 +149,9 @@ impl AuthHttp {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use super::*;
 
     #[test]
@@ -156,5 +180,109 @@ mod tests {
         );
         let other = http.budget(Error::new(ErrorKind::Network, "down"));
         assert_eq!(other.kind(), ErrorKind::Network);
+    }
+
+    #[test]
+    fn an_expired_command_cannot_start_an_http_phase() {
+        let expired = Instant::now() - Duration::from_secs(1);
+        let result = AuthHttp::start_with_deadline(&Limits::default(), Some(expired));
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::RequestTimeout);
+    }
+
+    #[tokio::test]
+    async fn an_expired_http_phase_sends_nothing_and_preserves_its_cause() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = Url::parse(&format!("http://{}/token", listener.local_addr().unwrap())).unwrap();
+        for (limit, expected) in [
+            (Limit::Operation, ErrorKind::AuthTimeout),
+            (Limit::Command, ErrorKind::RequestTimeout),
+        ] {
+            let mut http = AuthHttp::start(&Limits::default()).unwrap();
+            http.deadline = Instant::now() - Duration::from_secs(1);
+            http.limit = limit;
+            let result = http.send(http.post(&url)).await;
+            assert_eq!(result.unwrap_err().kind(), expected);
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_completed_http_phase_returns_status_origin_and_bounded_body() {
+        let reply = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}";
+        let (url, result) = send_loopback_reply(reply, 11).await;
+        let answer = result.unwrap();
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.origin, url.origin().ascii_serialization());
+        assert_eq!(answer.body, b"{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn a_token_redirect_preserves_the_request_error() {
+        let reply = b"HTTP/1.1 302 Found\r\nLocation: /moved\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (url, result) = send_loopback_reply(reply, 11).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::RedirectRejected);
+        assert_eq!(
+            error.message(),
+            format!(
+                "{} answered 302 Found, a redirect this request does not follow",
+                url.origin().ascii_serialization()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_metadata_reply_preserves_the_body_error() {
+        let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nxxx";
+        let (url, result) = send_loopback_reply(reply, 2).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MetadataTooLarge);
+        assert_eq!(
+            error.message(),
+            format!(
+                "the response from {} is larger than 2 bytes",
+                url.origin().ascii_serialization()
+            )
+        );
+    }
+
+    async fn send_loopback_reply(
+        reply: &'static [u8],
+        max_bytes: u64,
+    ) -> (Url, Result<Answer, Error>) {
+        tokio::time::timeout(Duration::from_secs(6), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url =
+                Url::parse(&format!("http://{}/token", listener.local_addr().unwrap())).unwrap();
+            let http = AuthHttp::start(&Limits {
+                auth_network_budget_secs: 5,
+                max_metadata_bytes: max_bytes,
+                ..Limits::default()
+            })
+            .unwrap();
+            let server = async {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut head = Vec::with_capacity(4096);
+                for _ in 0..4096 {
+                    head.push(stream.read_u8().await.unwrap());
+                    if head.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                assert!(head.ends_with(b"\r\n\r\n"));
+                assert!(head.starts_with(b"POST /token HTTP/1.1\r\n"));
+                stream.write_all(reply).await.unwrap();
+                stream.shutdown().await.unwrap();
+            };
+            // Both futures are owned here; watchdog cancellation drops their sockets.
+            let ((), result) = tokio::join!(server, http.send(http.post(&url)));
+            (url, result)
+        })
+        .await
+        .unwrap()
     }
 }

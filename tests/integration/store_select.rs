@@ -27,6 +27,7 @@ fn choose(
         config_dir: Path::new("/home/me/.config/mcpjump"),
         config_file: Path::new("/home/me/.config/mcpjump/config.toml"),
         limits: &limits,
+        deadline: None,
     };
     select(opener, &request)
 }
@@ -161,4 +162,35 @@ fn a_selected_store_reports_its_own_failures() {
     ] {
         assert_eq!(error.kind(), ErrorKind::KeyringTimeout);
     }
+}
+
+#[test]
+fn expired_selection_opens_neither_backend() {
+    let opener = FakeOpener::default();
+    let directory = tempfile::tempdir().unwrap();
+    let name = ServerName::parse("demo").unwrap();
+    let limits = Limits::default();
+    let path = directory.path().join("config.toml");
+    for policy in [
+        CredentialStoreKind::Auto,
+        CredentialStoreKind::Keyring,
+        CredentialStoreKind::File,
+    ] {
+        let error = select(
+            &opener,
+            &Request {
+                server: &name,
+                recorded: None,
+                policy,
+                config_dir: directory.path(),
+                config_file: &path,
+                limits: &limits,
+                deadline: Some(tokio::time::Instant::now() - std::time::Duration::from_secs(1)),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::RequestTimeout);
+    }
+    assert_eq!(opener.opened(), 0);
+    assert!(!directory.path().join("credentials").exists());
 }

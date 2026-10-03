@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use tokio::time::Instant;
+
 use crate::config::limits::Limits;
 use crate::error::Error;
 use crate::store::file::FileStore;
@@ -15,11 +17,12 @@ use crate::store::{CredentialStore, keyring, platform};
 pub struct SystemStores;
 
 impl StoreOpener for SystemStores {
-    fn keyring(&self, limits: &Limits) -> Result<KeyringStart, Error> {
+    fn keyring(&self, limits: &Limits, deadline: Option<Instant>) -> Result<KeyringStart, Error> {
         keyring::open(
             platform::start,
             platform::MAX_ENTRY_BYTES,
             limits.keyring_timeout(),
+            deadline,
         )
     }
 

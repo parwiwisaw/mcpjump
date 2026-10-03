@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::config::limits::Limits;
 use crate::error::{Error, ErrorKind};
-use crate::mcp::session::{McpSession, Tool};
+use crate::mcp::session::{McpSession, Tool, ToolPage};
 
 /// Longest tool name.
 pub const MAX_TOOL_NAME_LEN: usize = 128;
@@ -47,8 +47,8 @@ pub async fn scan(
     let mut cursor = None;
     for _ in 0..limits.max_tool_pages {
         let page = session.list_tools_page(cursor).await?;
+        tally.add(&page, limits)?;
         for tool in page.tools {
-            tally.add(&tool, limits)?;
             if !valid_name(&tool.name) {
                 list.skipped += 1;
             } else if wanted.is_none_or(|name| name == tool.name) {
@@ -80,10 +80,9 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, tool: &Tool, limits: &Limits) -> Result<(), Error> {
-        self.tools += 1;
-        let size = u64::try_from(tool.definition.to_string().len()).unwrap_or(u64::MAX);
-        self.bytes = self.bytes.saturating_add(size);
+    fn add(&mut self, page: &ToolPage, limits: &Limits) -> Result<(), Error> {
+        self.tools = self.tools.saturating_add(page.received_count);
+        self.bytes = self.bytes.saturating_add(page.received_bytes);
         if self.tools > limits.max_tools {
             return Err(limit(&format!(
                 "listed more than max_tools ({})",

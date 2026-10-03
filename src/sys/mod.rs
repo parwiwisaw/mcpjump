@@ -3,6 +3,7 @@
 
 pub mod browser;
 pub mod clock;
+pub mod deadline;
 pub mod env;
 pub mod terminal;
 pub mod worker;

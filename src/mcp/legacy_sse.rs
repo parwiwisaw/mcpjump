@@ -84,10 +84,16 @@ impl SseTransport {
     }
 }
 
-/// Anything except an authorized successful event stream rejects this transport.
+/// Only explicit transport rejection or successful non-SSE replies permit fallback.
 fn check_stream(response: &Response, origin: &str) -> Result<(), Error> {
-    let status = response.status();
     reject_auth(response, origin)?;
+    let status = response.status();
+    if !status.is_success() && !matches!(status.as_u16(), 400 | 404 | 405) {
+        return Err(Error::new(
+            ErrorKind::HttpStatus,
+            format!("{origin} answered HTTP {status}"),
+        ));
+    }
     if status.is_success() && matches!(media(response), Media::EventStream) {
         Ok(())
     } else {

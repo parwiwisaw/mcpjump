@@ -379,7 +379,7 @@ fn a_held_server_lock_times_out() {
             connected(listing())
         };
         let name = ServerName::parse(NAME).unwrap();
-        let held = lock::server_lock(h.home.path(), &name, Duration::ZERO).unwrap();
+        let held = lock::server_lock(h.home.path(), &name, Duration::ZERO, None).unwrap();
         let failed = failure(&tools(&h));
         assert_eq!(failed.0, "credential_lock_timeout", "{}", failed.1);
         drop(held);
@@ -458,4 +458,127 @@ fn a_403_for_another_reason_is_passed_on() {
     assert_eq!(failure(&tools(&h)).0, "auth_required");
     assert!(server.paths().is_empty());
     assert!(saved(&h).pending_scopes.is_empty());
+}
+
+#[test]
+fn pre_push_red_changed_binding_cannot_supply_a_replacement_bearer() {
+    let server = OAuthServer::start(Script::default());
+    let (mut h, _store, path) = file_login(&server);
+    let mut replacement = tokens(&server);
+    replacement.resource = "https://other.example/mcp".parse().unwrap();
+    replacement.access_token = "replacement-bearer".to_owned();
+    let bytes = record::encode(&replacement);
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    h.connector = FakeConnector::answer(Err(unauthorized(&server)))
+        .then_session(listing(), Generation::Modern)
+        .rewriting(path.clone(), &text);
+    let outcome = tools(&h);
+    assert_eq!(outcome.code, 3, "stderr: {}", outcome.err);
+    assert_eq!(failure(&outcome).0, "auth_required");
+    assert!(outcome.out.is_empty());
+    assert_eq!(bearers(&h), [bearer("at-0")]);
+    assert!(server.paths().is_empty());
+    assert_eq!(h.browser.opens(), 0);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+/// Replacement identity variants are independent of access-token rotation.
+const BINDING_CHANGES: [fn(&mut TokenRecord); 4] = [
+    |record| {
+        record.resource = "https://other.example/mcp".parse().unwrap();
+    },
+    |record| {
+        // This still matches the configured resource prefix, but changes
+        // the login identity pinned before the first MCP attempt.
+        record.resource.set_path("/");
+    },
+    |record| "other-client".clone_into(&mut record.client_id),
+    |record| {
+        record.issuer = "https://other.example/".parse().unwrap();
+    },
+];
+
+fn reject_changed_binding(change: fn(&mut TokenRecord), rotated: bool, scope: bool) {
+    let server = OAuthServer::start(Script::default());
+    let (mut h, _store, path) = file_login(&server);
+    let mut replacement = tokens(&server);
+    change(&mut replacement);
+    if rotated {
+        "replacement-bearer".clone_into(&mut replacement.access_token);
+    }
+    let bytes = record::encode(&replacement);
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let refusal = if scope {
+        needs_scope(Some("write"))
+    } else {
+        unauthorized(&server)
+    };
+    h.connector = FakeConnector::answer(Err(refusal))
+        .then_session(listing(), Generation::Modern)
+        .rewriting(path.clone(), &text);
+    let outcome = tools(&h);
+    assert_eq!(outcome.code, 3, "stderr: {}", outcome.err);
+    assert_eq!(failure(&outcome).0, "auth_required");
+    assert!(outcome.out.is_empty());
+    assert!(!outcome.err.contains("at-0"));
+    assert!(!outcome.err.contains("replacement-bearer"));
+    assert_eq!(bearers(&h), [bearer("at-0")]);
+    assert!(server.paths().is_empty());
+    assert_eq!(h.browser.opens(), 0);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn every_locked_refresh_reread_preserves_the_initial_identity() {
+    for change in BINDING_CHANGES {
+        for rotated in [false, true] {
+            reject_changed_binding(change, rotated, false);
+        }
+    }
+}
+
+#[test]
+fn pending_scope_rereads_reject_each_replacement_identity_without_writing() {
+    for change in BINDING_CHANGES {
+        for rotated in [false, true] {
+            reject_changed_binding(change, rotated, true);
+        }
+    }
+}
+
+#[test]
+fn a_same_binding_rotation_can_keep_requested_pending_scope() {
+    let server = OAuthServer::start(Script::default());
+    let (mut h, store, path) = file_login(&server);
+    let mut newer = tokens(&server);
+    newer.access_token = "at-9".to_owned();
+    let text = String::from_utf8(record::encode(&newer)).unwrap();
+    h.connector = FakeConnector::answer(Err(needs_scope(Some("write")))).rewriting(path, &text);
+    let outcome = tools(&h);
+    assert_eq!(outcome.code, 3);
+    assert_eq!(failure(&outcome).0, "auth_required");
+    let kept: TokenRecord = stored(&store, RecordKind::Tokens).unwrap();
+    assert_eq!(kept.access_token, "at-9");
+    assert_eq!(kept.pending_scopes, ["write"]);
+    assert_eq!(bearers(&h), [bearer("at-0")]);
+    assert!(server.paths().is_empty());
+}
+
+#[test]
+fn a_refreshed_login_stays_fresh_for_the_next_independent_read() {
+    let (server, mut h) = logged_in(
+        Script {
+            expires_in: Some(60),
+            ..Script::default()
+        },
+        "",
+    );
+    server.set_token_lifetime(3600);
+    h.connector = connected(listing()).then_session(listing(), Generation::Modern);
+    h.clock.set(START + 4000);
+    reply(&tools(&h));
+    reply(&tools(&h));
+    assert_eq!(saved(&h).expires_at, Some(START + 7600));
+    assert_eq!(bearers(&h), [bearer("at-1"), bearer("at-1")]);
+    assert_eq!(server.to("/token").len(), 1);
 }

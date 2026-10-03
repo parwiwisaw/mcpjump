@@ -3,7 +3,9 @@
 
 use toml_edit::{DocumentMut, InlineTable, Item, Table, value};
 
-use crate::config::model::{Backend, Generation, ServerSpec, unknown_server};
+use crate::config::model::{
+    Backend, Generation, ServerSpec, check_server_name_uniqueness, unknown_server,
+};
 use crate::config::validate::ServerName;
 use crate::error::{Error, ErrorKind};
 
@@ -23,7 +25,10 @@ pub fn insert_server(
         .or_insert(Item::Table(implicit))
         .as_table_like_mut()
         .ok_or_else(servers_not_a_table)?;
-    if servers.contains_key(name.as_str()) {
+    if servers
+        .iter()
+        .any(|(existing, _)| existing.eq_ignore_ascii_case(name.as_str()))
+    {
         return Err(Error::new(
             ErrorKind::ServerExists,
             format!(
@@ -33,6 +38,14 @@ pub fn insert_server(
         ));
     }
     servers.insert(name.as_str(), Item::Table(server_table(spec)));
+    Ok(())
+}
+
+/// Rejects case aliases before a config-update closure can touch credentials.
+pub(crate) fn check_server_names(doc: &DocumentMut) -> Result<(), Error> {
+    if let Some(servers) = doc.get("servers").and_then(Item::as_table_like) {
+        check_server_name_uniqueness(servers.iter().map(|(name, _)| name))?;
+    }
     Ok(())
 }
 

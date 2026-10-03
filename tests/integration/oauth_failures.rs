@@ -76,7 +76,7 @@ fn free_port() -> u16 {
 
 fn hold_lock(h: &Harness) -> FileLock {
     let name = ServerName::parse(NAME).unwrap();
-    lock::server_lock(h.home.path(), &name, Duration::ZERO).unwrap()
+    lock::server_lock(h.home.path(), &name, Duration::ZERO, None).unwrap()
 }
 
 #[test]
@@ -250,10 +250,28 @@ fn a_held_lock_fails_saving_the_tokens() {
         RecordKind::Registration,
         &client_on(&server, free_port()),
     );
-    let held = hold_lock(&h);
-    assert_eq!(login(&h).0, "credential_lock_timeout");
-    drop(held);
+    let mut err = LockAfterNotice {
+        h: &h,
+        text: Vec::new(),
+        held: None,
+    };
+    let mut out = Vec::new();
+    let code = h.run_with(&["login", "demo"], &mut out, &mut err);
+    let outcome = crate::support::Outcome {
+        code,
+        out: String::from_utf8(out).unwrap(),
+        err: String::from_utf8(err.text.clone()).unwrap(),
+    };
+    assert!(err.held.is_some(), "save-lock gate was never reached");
+    assert_eq!(failure(&outcome).0, "credential_lock_timeout");
+    assert!(outcome.out.is_empty());
+    assert!(
+        stored::<mcpjump::store::record::TokenRecord>(h.stores.keyring(), RecordKind::Tokens)
+            .is_none()
+    );
+    drop(err);
     assert_eq!(server.to("/token").len(), 1);
+    assert_eq!(server.to("/authorize").len(), 1);
     assert!(server.to("/register").is_empty());
 }
 
@@ -287,4 +305,93 @@ fn a_logout_whose_store_or_lock_fails_fails() {
         "credential_lock_timeout"
     );
     drop(held);
+}
+
+/// Hold only the final token-save lock, after all initial credential loads.
+struct LockAfterNotice<'a> {
+    h: &'a Harness,
+    text: Vec<u8>,
+    held: Option<FileLock>,
+}
+
+impl std::io::Write for LockAfterNotice<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.text.extend_from_slice(bytes);
+        if self.held.is_none()
+            && bytes.contains(&b'\n')
+            && String::from_utf8_lossy(&self.text).contains("\"authorize\":")
+        {
+            self.held = Some(hold_lock(self.h));
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CheckingInteraction<'a> {
+    dir: &'a std::path::Path,
+    terminal: &'a crate::support::fakes::terminal::ScriptedTerminal,
+    browser: &'a crate::support::fakes::browser::RecordingBrowser,
+    checked: std::sync::atomic::AtomicUsize,
+}
+
+impl CheckingInteraction<'_> {
+    fn unlocked(&self) {
+        let name = ServerName::parse(NAME).unwrap();
+        let config = self.dir.join("locks/config.lock");
+        let _config = mcpjump::files::lock(&config, Duration::ZERO).unwrap();
+        let _server = lock::server_lock(self.dir, &name, Duration::ZERO, None).unwrap();
+        self.checked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl mcpjump::sys::browser::BrowserOpener for CheckingInteraction<'_> {
+    fn open(&self, url: &Url, timeout: Duration) -> Result<(), String> {
+        self.unlocked();
+        mcpjump::sys::browser::BrowserOpener::open(self.browser, url, timeout)
+    }
+}
+
+impl mcpjump::sys::terminal::Terminal for CheckingInteraction<'_> {
+    fn read_stdin(&self, limit: u64, timeout: Duration) -> Result<String, mcpjump::error::Error> {
+        mcpjump::sys::terminal::Terminal::read_stdin(self.terminal, limit, timeout)
+    }
+
+    fn paste(&self) -> Option<tokio::sync::mpsc::Receiver<String>> {
+        self.unlocked();
+        mcpjump::sys::terminal::Terminal::paste(self.terminal)
+    }
+}
+
+#[test]
+fn login_releases_config_and_credentials_before_browser_and_paste_input() {
+    let server = OAuthServer::start(Script::default());
+    let h = ready(&server, "credentials = \"keyring\"\n");
+    let interaction = CheckingInteraction {
+        dir: h.home.path(),
+        terminal: &h.terminal,
+        browser: &h.browser,
+        checked: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let deps = mcpjump::Deps {
+        browser: &interaction,
+        terminal: &interaction,
+        ..h.deps()
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = mcpjump::run(["mcpjump", "login", "demo"], &deps, &mut out, &mut err);
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    assert_eq!(
+        interaction
+            .checked
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert_eq!(h.browser.opens(), 1);
+    assert_eq!(server.to("/token").len(), 1);
 }

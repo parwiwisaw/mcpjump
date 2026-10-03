@@ -6,11 +6,14 @@
 use std::fmt;
 use std::path::Path;
 
+use tokio::time::Instant;
+
 use crate::config::limits::Limits;
 use crate::config::model::{Backend, CredentialStoreKind};
 use crate::config::validate::ServerName;
 use crate::error::{Error, ErrorKind};
 use crate::store::CredentialStore;
+use crate::sys::deadline;
 
 /// The result of starting the OS keyring.
 #[derive(Debug)]
@@ -28,8 +31,9 @@ pub trait StoreOpener: fmt::Debug {
     ///
     /// # Errors
     /// `credential_store` for a keyring that refuses access,
-    /// `keyring_timeout` if it does not start in time.
-    fn keyring(&self, limits: &Limits) -> Result<KeyringStart, Error>;
+    /// `keyring_timeout` if its own wait expires; `request_timeout` if the
+    /// optional command budget expires first.
+    fn keyring(&self, limits: &Limits, deadline: Option<Instant>) -> Result<KeyringStart, Error>;
 
     /// The file store under `config_dir`.
     fn file(&self, config_dir: &Path) -> Box<dyn CredentialStore>;
@@ -50,6 +54,8 @@ pub struct Request<'a> {
     pub config_file: &'a Path,
     /// The limits, for the keyring timeout.
     pub limits: &'a Limits,
+    /// One immutable command deadline; absent for login/logout/remove.
+    pub deadline: Option<Instant>,
 }
 
 /// The backend chosen for a server.
@@ -69,6 +75,7 @@ pub struct Selected {
 /// `credential_store` when the keyring is required but unavailable or
 /// refuses access, `keyring_timeout`.
 pub fn select(opener: &dyn StoreOpener, request: &Request<'_>) -> Result<Selected, Error> {
+    deadline::check(request.deadline)?;
     match (request.recorded, request.policy) {
         (Some(Backend::Keyring), _) | (None, CredentialStoreKind::Keyring) => {
             keyring_only(opener, request)
@@ -78,18 +85,20 @@ pub fn select(opener: &dyn StoreOpener, request: &Request<'_>) -> Result<Selecte
             Ok(file(opener, request, warning))
         }
         (None, CredentialStoreKind::File) => Ok(file(opener, request, None)),
-        (None, CredentialStoreKind::Auto) => match opener.keyring(request.limits)? {
-            KeyringStart::Ready(store) => Ok(keyring(store)),
-            KeyringStart::Unavailable(reason) => {
-                let notice = fallback_notice(request, &reason);
-                Ok(file(opener, request, Some(notice)))
+        (None, CredentialStoreKind::Auto) => {
+            match opener.keyring(request.limits, request.deadline)? {
+                KeyringStart::Ready(store) => Ok(keyring(store)),
+                KeyringStart::Unavailable(reason) => {
+                    let notice = fallback_notice(request, &reason);
+                    Ok(file(opener, request, Some(notice)))
+                }
             }
-        },
+        }
     }
 }
 
 fn keyring_only(opener: &dyn StoreOpener, request: &Request<'_>) -> Result<Selected, Error> {
-    match opener.keyring(request.limits)? {
+    match opener.keyring(request.limits, request.deadline)? {
         KeyringStart::Ready(store) => Ok(keyring(store)),
         KeyringStart::Unavailable(reason) => Err(Error::new(
             ErrorKind::CredentialStore,
